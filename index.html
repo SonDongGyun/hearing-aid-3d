@@ -17,19 +17,8 @@
     </div>
   </div>
 
-  <!-- Hand Tracking Camera (hidden) -->
-  <video id="webcam" style="display:none"></video>
-
   <!-- Three.js Canvas -->
   <canvas id="three-canvas"></canvas>
-
-  <!-- Hand Cursor -->
-  <div id="hand-cursor">
-    <svg viewBox="0 0 40 40" width="40" height="40">
-      <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(0,200,255,0.8)" stroke-width="2"/>
-      <circle cx="20" cy="20" r="4" fill="rgba(0,200,255,0.9)"/>
-    </svg>
-  </div>
 
   <!-- Navigation -->
   <nav id="nav">
@@ -178,25 +167,149 @@
     </div>
   </section>
 
-  <!-- Hand Interaction Section -->
+  <!-- Experience Section: Tabs -->
   <section id="hand-section" class="section section-dark">
     <div class="section-container">
       <div class="section-header">
-        <span class="section-tag">INTERACTIVE</span>
-        <h2>손으로 체험하세요</h2>
-        <p>웹캠을 활성화하고 손을 움직여 음파를 제어해보세요</p>
+        <span class="section-tag">EXPERIENCE</span>
+        <h2>직접 체험하세요</h2>
+        <p>SoundClear의 핵심 기술을 직접 경험해보세요</p>
       </div>
-      <div class="hand-demo">
-        <div class="hand-canvas-wrapper">
-          <canvas id="hand-canvas"></canvas>
-          <div class="hand-overlay" id="hand-overlay">
-            <button class="btn-primary" id="start-camera">
-              <span>📷</span> 카메라 시작하기
-            </button>
-            <p class="hand-hint">손을 펼치면 음파가 퍼지고, 주먹을 쥐면 음파가 모입니다</p>
+
+      <!-- Tab Navigation -->
+      <div class="exp-tabs">
+        <button class="exp-tab active" data-tab="noise">AI 소음 제거</button>
+        <button class="exp-tab" data-tab="hearing">청력 테스트</button>
+        <button class="exp-tab" data-tab="environment">환경 시뮬레이션</button>
+      </div>
+
+      <!-- Tab 1: Noise Cancellation -->
+      <div class="exp-panel active" id="panel-noise">
+        <div class="noise-demo">
+          <div class="noise-visual">
+            <canvas id="noise-canvas"></canvas>
+            <div class="noise-overlay" id="noise-overlay">
+              <button class="btn-primary" id="start-mic">
+                <span>🎤</span> 마이크 시작하기
+              </button>
+              <p class="hand-hint">마이크를 활성화하여 주변 소리의 변화를 확인하세요</p>
+            </div>
+          </div>
+          <div class="noise-controls">
+            <div class="noise-toggle-row">
+              <span class="noise-label">보청기 AI 소음제거</span>
+              <button class="toggle-switch" id="noise-toggle">
+                <span class="toggle-knob"></span>
+                <span class="toggle-text">OFF</span>
+              </button>
+            </div>
+            <div class="noise-info">
+              <div class="noise-meter">
+                <span class="meter-label">입력 소음</span>
+                <div class="meter-bar"><div class="meter-fill" id="input-meter"></div></div>
+                <span class="meter-value" id="input-db">-- dB</span>
+              </div>
+              <div class="noise-meter">
+                <span class="meter-label">처리 후 음성</span>
+                <div class="meter-bar"><div class="meter-fill filtered" id="output-meter"></div></div>
+                <span class="meter-value" id="output-db">-- dB</span>
+              </div>
+            </div>
+            <p class="noise-desc">실시간으로 주변 소음을 분석합니다. AI 소음제거를 켜면 배경 소음은 줄이고 음성 대역(300Hz~3400Hz)만 선명하게 전달하는 것을 확인할 수 있습니다.</p>
           </div>
         </div>
       </div>
+
+      <!-- Tab 2: Hearing Test -->
+      <div class="exp-panel" id="panel-hearing">
+        <div class="hearing-demo">
+          <div class="hearing-visual">
+            <canvas id="hearing-canvas"></canvas>
+          </div>
+          <div class="hearing-controls">
+            <h3>주파수별 청력 테스트</h3>
+            <p class="hearing-desc">각 주파수의 소리를 재생하고, 들리는 최소 볼륨을 조절해보세요. 보청기가 어떤 주파수를 보강해주는지 확인할 수 있습니다.</p>
+            <div class="freq-sliders">
+              <div class="freq-group">
+                <label>250 Hz<br><span class="freq-type">저음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="250" />
+                <button class="freq-play" data-freq="250">▶</button>
+              </div>
+              <div class="freq-group">
+                <label>500 Hz<br><span class="freq-type">저음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="500" />
+                <button class="freq-play" data-freq="500">▶</button>
+              </div>
+              <div class="freq-group">
+                <label>1000 Hz<br><span class="freq-type">중음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="1000" />
+                <button class="freq-play" data-freq="1000">▶</button>
+              </div>
+              <div class="freq-group">
+                <label>2000 Hz<br><span class="freq-type">중음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="2000" />
+                <button class="freq-play" data-freq="2000">▶</button>
+              </div>
+              <div class="freq-group">
+                <label>4000 Hz<br><span class="freq-type">고음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="4000" />
+                <button class="freq-play" data-freq="4000">▶</button>
+              </div>
+              <div class="freq-group">
+                <label>8000 Hz<br><span class="freq-type">고음</span></label>
+                <input type="range" min="0" max="100" value="50" class="freq-slider" data-freq="8000" />
+                <button class="freq-play" data-freq="8000">▶</button>
+              </div>
+            </div>
+            <div class="hearing-result" id="hearing-result">
+              <p>각 주파수별 소리를 재생하여 청력 프로필을 확인해보세요.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: Environment Simulation -->
+      <div class="exp-panel" id="panel-environment">
+        <div class="env-demo">
+          <div class="env-visual">
+            <canvas id="env-canvas"></canvas>
+            <div class="env-ha-toggle">
+              <button class="toggle-switch" id="env-ha-toggle">
+                <span class="toggle-knob"></span>
+                <span class="toggle-text">보청기 OFF</span>
+              </button>
+            </div>
+          </div>
+          <div class="env-controls">
+            <h3>환경별 청취 시뮬레이션</h3>
+            <p class="env-desc">다양한 환경에서 보청기 착용 전/후의 소리 차이를 시각적으로 비교해보세요.</p>
+            <div class="env-buttons">
+              <button class="env-btn active" data-env="cafe">
+                <span class="env-icon">☕</span>
+                <span>카페</span>
+              </button>
+              <button class="env-btn" data-env="street">
+                <span class="env-icon">🚗</span>
+                <span>길거리</span>
+              </button>
+              <button class="env-btn" data-env="conversation">
+                <span class="env-icon">💬</span>
+                <span>대화</span>
+              </button>
+              <button class="env-btn" data-env="nature">
+                <span class="env-icon">🌿</span>
+                <span>자연</span>
+              </button>
+            </div>
+            <div class="env-legend">
+              <div class="legend-item"><span class="legend-dot noise-dot"></span> 배경소음</div>
+              <div class="legend-item"><span class="legend-dot voice-dot"></span> 음성/주요소리</div>
+              <div class="legend-item"><span class="legend-dot filtered-dot"></span> 보청기 처리 후</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </section>
 

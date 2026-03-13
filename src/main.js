@@ -4,8 +4,7 @@ import { gsap } from 'gsap';
 // ===== GLOBALS =====
 let scene, camera, renderer;
 let hearingAidGroup, particleSystem, soundWaveRings = [];
-let handCanvas, handCtx;
-let handX = 0.5, handY = 0.5, handOpen = true, handActive = false;
+let handActive = false;
 let scrollY = 0, targetScrollY = 0;
 const clock = new THREE.Clock();
 const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
@@ -58,9 +57,11 @@ function init() {
   setupIntersectionObserver();
   animateStats();
 
-  // Hand interaction canvas
-  handCanvas = document.getElementById('hand-canvas');
-  handCtx = handCanvas.getContext('2d');
+  // Experience demos
+  setupExperienceTabs();
+  setupNoiseCancellation();
+  setupHearingTest();
+  setupEnvironmentSim();
 
   // Hide loader
   setTimeout(() => {
@@ -391,8 +392,7 @@ function setupEvents() {
     if (mobileNav) mobileNav.classList.remove('open');
   };
 
-  // Start camera button
-  document.getElementById('start-camera').addEventListener('click', startHandTracking);
+  // (experience demos are initialized separately)
 }
 
 // ===== SCROLL ANIMATIONS =====
@@ -457,243 +457,700 @@ function animateStats() {
   if (statsContainer) observer.observe(statsContainer);
 }
 
-// ===== SCRIPT LOADER =====
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src;
-    s.crossOrigin = 'anonymous';
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
+// ===== EXPERIENCE TABS =====
+function setupExperienceTabs() {
+  const tabs = document.querySelectorAll('.exp-tab');
+  const panels = document.querySelectorAll('.exp-panel');
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      panels.forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+    });
   });
 }
 
-// ===== HAND TRACKING =====
-async function startHandTracking() {
-  const overlay = document.getElementById('hand-overlay');
-  const video = document.getElementById('webcam');
-  const cursor = document.getElementById('hand-cursor');
+// ======================================================
+// 1. NOISE CANCELLATION DEMO
+// ======================================================
+let noiseAudioCtx, noiseAnalyser, noiseDataArray, noiseMicStream;
+let noiseFilterEnabled = false;
+let noiseAnimFrame;
 
+function setupNoiseCancellation() {
+  const startBtn = document.getElementById('start-mic');
+  const toggle = document.getElementById('noise-toggle');
+
+  startBtn.addEventListener('click', startNoiseMic);
+  toggle.addEventListener('click', () => {
+    noiseFilterEnabled = !noiseFilterEnabled;
+    toggle.classList.toggle('active', noiseFilterEnabled);
+    toggle.querySelector('.toggle-text').textContent = noiseFilterEnabled ? 'ON' : 'OFF';
+  });
+}
+
+async function startNoiseMic() {
+  const overlay = document.getElementById('noise-overlay');
   try {
-    const camWidth = isMobile ? 320 : 640;
-    const camHeight = isMobile ? 240 : 360;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: camWidth, height: camHeight, facingMode: 'user' }
-    });
-    video.srcObject = stream;
-    await video.play();
-
+    noiseMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     overlay.classList.add('hidden');
 
-    // Resize canvas
-    handCanvas.width = handCanvas.clientWidth;
-    handCanvas.height = handCanvas.clientHeight;
+    noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
 
-    // Load MediaPipe Hands via CDN
-    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
-    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
+    noiseAnalyser = noiseAudioCtx.createAnalyser();
+    noiseAnalyser.fftSize = 2048;
+    noiseAnalyser.smoothingTimeConstant = 0.8;
+    source.connect(noiseAnalyser);
 
-    const hands = new window.Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
+    noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
 
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: isMobile ? 0 : 1, // lighter model on mobile
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.5
-    });
+    const canvas = document.getElementById('noise-canvas');
+    canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+    canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
 
-    hands.onResults((results) => {
-      handCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
-
-      // Draw camera feed (mirrored)
-      handCtx.save();
-      handCtx.scale(-1, 1);
-      handCtx.drawImage(video, -handCanvas.width, 0, handCanvas.width, handCanvas.height);
-      handCtx.restore();
-
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
-        handActive = true;
-        cursor.classList.add('active');
-
-        // Get palm center
-        const palm = landmarks[9]; // middle finger base
-        handX = 1 - palm.x; // mirror
-        handY = palm.y;
-
-        // Update cursor position
-        const canvasRect = handCanvas.getBoundingClientRect();
-        cursor.style.left = `${canvasRect.left + handX * canvasRect.width}px`;
-        cursor.style.top = `${canvasRect.top + handY * canvasRect.height}px`;
-
-        // Detect open/closed hand (distance between fingertips and palm)
-        const thumbTip = landmarks[4];
-        const indexTip = landmarks[8];
-        const pinkyTip = landmarks[20];
-        const wrist = landmarks[0];
-
-        const avgFingerDist = (
-          distance(indexTip, wrist) +
-          distance(pinkyTip, wrist) +
-          distance(thumbTip, wrist)
-        ) / 3;
-
-        handOpen = avgFingerDist > 0.25;
-
-        // Draw hand skeleton
-        drawHandLandmarks(landmarks);
-
-        // Draw sound waves on canvas
-        drawSoundWaveEffect(handX, handY, handOpen);
-      } else {
-        handActive = false;
-        cursor.classList.remove('active');
-      }
-    });
-
-    const mpCamera = new window.Camera(video, {
-      onFrame: async () => {
-        await hands.send({ image: video });
-      },
-      width: camWidth,
-      height: camHeight
-    });
-    mpCamera.start();
-
+    drawNoiseVisualization(canvas);
   } catch (err) {
-    console.error('Camera access failed:', err);
     overlay.innerHTML = `
-      <p style="color: #ff6666;">카메라 접근이 거부되었습니다.</p>
-      <p class="hand-hint">브라우저 설정에서 카메라 권한을 허용해주세요.</p>
+      <p style="color:#ff6666;">마이크 접근이 거부되었습니다.</p>
+      <p class="hand-hint">브라우저 설정에서 마이크 권한을 허용해주세요.</p>
     `;
   }
 }
 
-function distance(a, b) {
-  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
-}
+function drawNoiseVisualization(canvas) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
 
-function drawHandLandmarks(landmarks) {
-  const w = handCanvas.width;
-  const h = handCanvas.height;
+  function draw() {
+    noiseAnimFrame = requestAnimationFrame(draw);
+    noiseAnalyser.getByteFrequencyData(noiseDataArray);
 
-  // Connections
-  const connections = [
-    [0,1],[1,2],[2,3],[3,4],    // thumb
-    [0,5],[5,6],[6,7],[7,8],    // index
-    [0,9],[9,10],[10,11],[11,12], // middle
-    [0,13],[13,14],[14,15],[15,16], // ring
-    [0,17],[17,18],[18,19],[19,20], // pinky
-    [5,9],[9,13],[13,17]          // palm
-  ];
+    ctx.fillStyle = 'rgba(5,5,8,0.3)';
+    ctx.fillRect(0, 0, w, h);
 
-  handCtx.strokeStyle = 'rgba(0, 200, 255, 0.6)';
-  handCtx.lineWidth = 2;
+    const binCount = noiseDataArray.length;
+    const barWidth = w / binCount * 2.5;
+    const time = performance.now() * 0.001;
 
-  connections.forEach(([a, b]) => {
-    const pa = landmarks[a];
-    const pb = landmarks[b];
-    handCtx.beginPath();
-    handCtx.moveTo((1 - pa.x) * w, pa.y * h);
-    handCtx.lineTo((1 - pb.x) * w, pb.y * h);
-    handCtx.stroke();
-  });
-
-  // Joints
-  landmarks.forEach((lm, i) => {
-    const x = (1 - lm.x) * w;
-    const y = lm.y * h;
-    const isFingertip = [4, 8, 12, 16, 20].includes(i);
-
-    handCtx.beginPath();
-    handCtx.arc(x, y, isFingertip ? 6 : 3, 0, Math.PI * 2);
-
-    if (isFingertip) {
-      const gradient = handCtx.createRadialGradient(x, y, 0, x, y, 10);
-      gradient.addColorStop(0, 'rgba(0, 200, 255, 1)');
-      gradient.addColorStop(1, 'rgba(123, 97, 255, 0)');
-      handCtx.fillStyle = gradient;
-    } else {
-      handCtx.fillStyle = 'rgba(0, 200, 255, 0.8)';
+    // Calculate RMS for dB display
+    let sumInput = 0;
+    for (let i = 0; i < binCount; i++) {
+      sumInput += noiseDataArray[i] * noiseDataArray[i];
     }
-    handCtx.fill();
-  });
-}
+    const rmsInput = Math.sqrt(sumInput / binCount);
+    const dbInput = Math.max(0, Math.min(100, rmsInput * 0.6));
 
-function drawSoundWaveEffect(x, y, isOpen) {
-  const w = handCanvas.width;
-  const h = handCanvas.height;
-  const cx = x * w;
-  const cy = y * h;
-  const time = performance.now() * 0.003;
+    // Voice band: 300Hz~3400Hz
+    const nyquist = noiseAudioCtx.sampleRate / 2;
+    const voiceLow = Math.floor(300 / nyquist * binCount);
+    const voiceHigh = Math.floor(3400 / nyquist * binCount);
 
-  if (isOpen) {
-    // Expanding sound waves
-    for (let i = 0; i < 5; i++) {
-      const radius = 30 + i * 40 + Math.sin(time + i) * 15;
-      const opacity = 0.4 - i * 0.07;
+    // Draw frequency bars — raw input
+    for (let i = 0; i < binCount && i * barWidth < w; i++) {
+      const val = noiseDataArray[i] / 255;
+      const barH = val * h * 0.8;
+      const x = i * barWidth;
+      const isVoice = i >= voiceLow && i <= voiceHigh;
 
-      handCtx.beginPath();
-      handCtx.arc(cx, cy, radius, 0, Math.PI * 2);
-      handCtx.strokeStyle = `rgba(0, 200, 255, ${opacity})`;
-      handCtx.lineWidth = 2;
-      handCtx.stroke();
+      // Raw waveform (top half)
+      ctx.fillStyle = isVoice
+        ? `rgba(0, 200, 255, ${0.4 + val * 0.6})`
+        : `rgba(255, 68, 68, ${0.3 + val * 0.5})`;
+      ctx.fillRect(x, h / 2 - barH / 2, Math.max(barWidth - 1, 1), barH / 2);
+    }
 
-      // Frequency visualization
-      handCtx.beginPath();
-      for (let a = 0; a < Math.PI * 2; a += 0.05) {
-        const waveR = radius + Math.sin(a * 8 + time * 3) * (5 + i * 3);
-        const px = cx + Math.cos(a) * waveR;
-        const py = cy + Math.sin(a) * waveR;
-        if (a === 0) handCtx.moveTo(px, py);
-        else handCtx.lineTo(px, py);
+    // Draw filtered output (bottom half)
+    if (noiseFilterEnabled) {
+      for (let i = 0; i < binCount && i * barWidth < w; i++) {
+        const isVoice = i >= voiceLow && i <= voiceHigh;
+        let val = noiseDataArray[i] / 255;
+
+        // Simulate noise cancellation: suppress non-voice, boost voice
+        if (!isVoice) {
+          val *= 0.05; // Heavy suppression of non-voice
+        } else {
+          val = Math.min(1, val * 1.3); // Slight boost to voice
+        }
+
+        const barH = val * h * 0.8;
+        const x = i * barWidth;
+        ctx.fillStyle = `rgba(123, 97, 255, ${0.4 + val * 0.6})`;
+        ctx.fillRect(x, h / 2, Math.max(barWidth - 1, 1), barH / 2);
       }
-      handCtx.closePath();
-      handCtx.strokeStyle = `rgba(123, 97, 255, ${opacity * 0.5})`;
-      handCtx.lineWidth = 1;
-      handCtx.stroke();
-    }
-  } else {
-    // Converging particles
-    for (let i = 0; i < 30; i++) {
-      const angle = (i / 30) * Math.PI * 2 + time;
-      const dist = 20 + Math.sin(time * 2 + i) * 10;
-      const px = cx + Math.cos(angle) * dist;
-      const py = cy + Math.sin(angle) * dist;
-
-      handCtx.beginPath();
-      handCtx.arc(px, py, 3, 0, Math.PI * 2);
-      const gradient = handCtx.createRadialGradient(px, py, 0, px, py, 5);
-      gradient.addColorStop(0, 'rgba(0, 200, 255, 0.9)');
-      gradient.addColorStop(1, 'rgba(123, 97, 255, 0)');
-      handCtx.fillStyle = gradient;
-      handCtx.fill();
+    } else {
+      // Without filter: same as input on bottom
+      for (let i = 0; i < binCount && i * barWidth < w; i++) {
+        const val = noiseDataArray[i] / 255;
+        const barH = val * h * 0.8;
+        const x = i * barWidth;
+        ctx.fillStyle = `rgba(136, 136, 160, ${0.2 + val * 0.3})`;
+        ctx.fillRect(x, h / 2, Math.max(barWidth - 1, 1), barH / 2);
+      }
     }
 
-    // Center glow
-    const glow = handCtx.createRadialGradient(cx, cy, 0, cx, cy, 30);
-    glow.addColorStop(0, 'rgba(0, 200, 255, 0.5)');
-    glow.addColorStop(0.5, 'rgba(123, 97, 255, 0.2)');
-    glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    handCtx.beginPath();
-    handCtx.arc(cx, cy, 30, 0, Math.PI * 2);
-    handCtx.fillStyle = glow;
-    handCtx.fill();
+    // Center line
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    // Labels
+    ctx.font = `${isMobile ? 10 : 12}px "Noto Sans KR", sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.textAlign = 'left';
+    ctx.fillText('원본 입력', 10, 20);
+    ctx.fillText(noiseFilterEnabled ? 'AI 소음제거 적용' : '처리 없음', 10, h - 10);
+
+    // Frequency labels
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    const freqLabels = [250, 500, 1000, 2000, 4000, 8000];
+    freqLabels.forEach(f => {
+      const idx = Math.floor(f / nyquist * binCount);
+      const x = idx * barWidth;
+      if (x < w) ctx.fillText(`${f >= 1000 ? f / 1000 + 'k' : f}`, x, h / 2 + 14);
+    });
+
+    // Voice band indicator
+    const vx1 = voiceLow * barWidth;
+    const vx2 = voiceHigh * barWidth;
+    ctx.strokeStyle = 'rgba(0,200,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(vx1, 4, vx2 - vx1, h - 8);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(0,200,255,0.3)';
+    ctx.fillText('음성 대역', (vx1 + vx2) / 2, h / 2 - 6);
+
+    // Update meters
+    const inputMeter = document.getElementById('input-meter');
+    const outputMeter = document.getElementById('output-meter');
+    const inputDbEl = document.getElementById('input-db');
+    const outputDbEl = document.getElementById('output-db');
+
+    inputMeter.style.width = `${dbInput}%`;
+    inputDbEl.textContent = `${Math.floor(dbInput * 0.8)} dB`;
+
+    if (noiseFilterEnabled) {
+      // Calculate voice-band only RMS
+      let sumVoice = 0, countVoice = 0;
+      for (let i = voiceLow; i <= voiceHigh; i++) {
+        sumVoice += noiseDataArray[i] * noiseDataArray[i];
+        countVoice++;
+      }
+      const rmsVoice = Math.sqrt(sumVoice / Math.max(1, countVoice));
+      const dbVoice = Math.max(0, Math.min(100, rmsVoice * 0.6));
+      outputMeter.style.width = `${dbVoice}%`;
+      outputDbEl.textContent = `${Math.floor(dbVoice * 0.8)} dB`;
+    } else {
+      outputMeter.style.width = `${dbInput}%`;
+      outputDbEl.textContent = `${Math.floor(dbInput * 0.8)} dB`;
+    }
   }
 
-  // DB level text
-  const db = isOpen ? Math.floor(40 + Math.sin(time) * 15) : Math.floor(20 + Math.sin(time) * 5);
-  handCtx.font = 'bold 16px "Noto Sans KR", sans-serif';
-  handCtx.fillStyle = 'rgba(0, 200, 255, 0.9)';
-  handCtx.textAlign = 'center';
-  handCtx.fillText(`${db} dB`, cx, cy - 80);
-  handCtx.font = '12px "Noto Sans KR", sans-serif';
-  handCtx.fillStyle = 'rgba(255,255,255,0.5)';
-  handCtx.fillText(isOpen ? '음파 확산 모드' : '음파 집중 모드', cx, cy - 60);
+  draw();
+}
+
+// ======================================================
+// 2. HEARING TEST
+// ======================================================
+let hearingAudioCtx;
+let activeOscillator = null;
+let hearingCanvasCtx;
+let hearingAnimFrame;
+const hearingProfile = {};
+
+function setupHearingTest() {
+  const canvas = document.getElementById('hearing-canvas');
+  canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+  canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
+  hearingCanvasCtx = canvas.getContext('2d');
+
+  // Play buttons
+  document.querySelectorAll('.freq-play').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const freq = parseInt(btn.dataset.freq);
+      const slider = document.querySelector(`.freq-slider[data-freq="${freq}"]`);
+      const volume = parseInt(slider.value) / 100;
+
+      if (btn.classList.contains('playing')) {
+        stopTone();
+        btn.classList.remove('playing');
+        btn.textContent = '▶';
+        return;
+      }
+
+      // Stop any playing tone
+      document.querySelectorAll('.freq-play').forEach(b => {
+        b.classList.remove('playing');
+        b.textContent = '▶';
+      });
+
+      playTone(freq, volume);
+      btn.classList.add('playing');
+      btn.textContent = '■';
+
+      // Record in profile
+      hearingProfile[freq] = volume;
+      updateHearingChart();
+      updateHearingResult();
+    });
+  });
+
+  // Slider change updates volume of active tone
+  document.querySelectorAll('.freq-slider').forEach(slider => {
+    slider.addEventListener('input', () => {
+      const freq = parseInt(slider.dataset.freq);
+      const volume = parseInt(slider.value) / 100;
+      hearingProfile[freq] = volume;
+
+      if (activeOscillator && activeOscillator._freq === freq) {
+        activeOscillator._gain.gain.setValueAtTime(volume * 0.3, hearingAudioCtx.currentTime);
+      }
+      updateHearingChart();
+    });
+  });
+
+  drawHearingChart();
+}
+
+function playTone(freq, volume) {
+  stopTone();
+
+  if (!hearingAudioCtx) {
+    hearingAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  const osc = hearingAudioCtx.createOscillator();
+  const gain = hearingAudioCtx.createGain();
+
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0, hearingAudioCtx.currentTime);
+  gain.gain.linearRampToValueAtTime(volume * 0.3, hearingAudioCtx.currentTime + 0.1);
+
+  osc.connect(gain);
+  gain.connect(hearingAudioCtx.destination);
+  osc.start();
+
+  osc._freq = freq;
+  osc._gain = gain;
+  activeOscillator = osc;
+
+  // Auto-stop after 3 seconds
+  setTimeout(() => {
+    if (activeOscillator === osc) {
+      stopTone();
+      document.querySelectorAll('.freq-play').forEach(b => {
+        b.classList.remove('playing');
+        b.textContent = '▶';
+      });
+    }
+  }, 3000);
+}
+
+function stopTone() {
+  if (activeOscillator) {
+    try {
+      activeOscillator._gain.gain.linearRampToValueAtTime(0, hearingAudioCtx.currentTime + 0.05);
+      activeOscillator.stop(hearingAudioCtx.currentTime + 0.1);
+    } catch (e) {}
+    activeOscillator = null;
+  }
+}
+
+function drawHearingChart() {
+  updateHearingChart();
+}
+
+function updateHearingChart() {
+  const ctx = hearingCanvasCtx;
+  const canvas = ctx.canvas;
+  const w = canvas.width;
+  const h = canvas.height;
+  const pad = { top: 40, right: 30, bottom: 50, left: 60 };
+  const chartW = w - pad.left - pad.right;
+  const chartH = h - pad.top - pad.bottom;
+
+  ctx.fillStyle = 'rgba(5,5,8,1)';
+  ctx.fillRect(0, 0, w, h);
+
+  const freqs = [250, 500, 1000, 2000, 4000, 8000];
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++) {
+    const y = pad.top + (chartH / 10) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + chartW, y);
+    ctx.stroke();
+  }
+
+  freqs.forEach((f, i) => {
+    const x = pad.left + (chartW / (freqs.length - 1)) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, pad.top + chartH);
+    ctx.stroke();
+  });
+
+  // Axis labels
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = `${isMobile ? 10 : 12}px "Noto Sans KR", sans-serif`;
+  ctx.textAlign = 'center';
+
+  freqs.forEach((f, i) => {
+    const x = pad.left + (chartW / (freqs.length - 1)) * i;
+    ctx.fillText(f >= 1000 ? `${f / 1000}kHz` : `${f}Hz`, x, h - 15);
+  });
+
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (chartH / 4) * i;
+    const label = ['큼', '', '보통', '', '작음'][i];
+    ctx.fillText(label, pad.left - 10, y + 4);
+  }
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = `bold ${isMobile ? 12 : 14}px "Noto Sans KR", sans-serif`;
+  ctx.fillText('주파수별 청력 프로필', w / 2, 24);
+
+  // Normal hearing range (shaded area)
+  ctx.fillStyle = 'rgba(0,200,255,0.05)';
+  ctx.fillRect(pad.left, pad.top, chartW, chartH * 0.4);
+  ctx.fillStyle = 'rgba(0,200,255,0.15)';
+  ctx.font = `${isMobile ? 9 : 11}px "Noto Sans KR", sans-serif`;
+  ctx.fillText('정상 청력 범위', w / 2, pad.top + 16);
+
+  // User profile line
+  const profileFreqs = freqs.filter(f => hearingProfile[f] !== undefined);
+  if (profileFreqs.length > 0) {
+    // Filled area
+    ctx.beginPath();
+    profileFreqs.forEach((f, i) => {
+      const fi = freqs.indexOf(f);
+      const x = pad.left + (chartW / (freqs.length - 1)) * fi;
+      const y = pad.top + chartH * (1 - hearingProfile[f]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    const lastFi = freqs.indexOf(profileFreqs[profileFreqs.length - 1]);
+    const firstFi = freqs.indexOf(profileFreqs[0]);
+    ctx.lineTo(pad.left + (chartW / (freqs.length - 1)) * lastFi, pad.top + chartH);
+    ctx.lineTo(pad.left + (chartW / (freqs.length - 1)) * firstFi, pad.top + chartH);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(0,200,255,0.08)';
+    ctx.fill();
+
+    // Line
+    ctx.beginPath();
+    profileFreqs.forEach((f, i) => {
+      const fi = freqs.indexOf(f);
+      const x = pad.left + (chartW / (freqs.length - 1)) * fi;
+      const y = pad.top + chartH * (1 - hearingProfile[f]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = '#00c8ff';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Points
+    profileFreqs.forEach(f => {
+      const fi = freqs.indexOf(f);
+      const x = pad.left + (chartW / (freqs.length - 1)) * fi;
+      const y = pad.top + chartH * (1 - hearingProfile[f]);
+
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#00c8ff';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0,200,255,0.3)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    // Simulated "with hearing aid" line
+    ctx.beginPath();
+    ctx.setLineDash([6, 4]);
+    profileFreqs.forEach((f, i) => {
+      const fi = freqs.indexOf(f);
+      const x = pad.left + (chartW / (freqs.length - 1)) * fi;
+      // Hearing aid boosts weak frequencies toward normal
+      const raw = hearingProfile[f];
+      const boosted = raw + (1 - raw) * 0.6; // Boost toward 1.0
+      const y = pad.top + chartH * (1 - Math.min(1, boosted));
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = '#7b61ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Legend
+    ctx.font = `${isMobile ? 9 : 11}px "Noto Sans KR", sans-serif`;
+    ctx.textAlign = 'left';
+
+    ctx.fillStyle = '#00c8ff';
+    ctx.fillRect(pad.left + 10, pad.top + chartH - 36, 12, 3);
+    ctx.fillText('현재 청력', pad.left + 28, pad.top + chartH - 32);
+
+    ctx.fillStyle = '#7b61ff';
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = '#7b61ff';
+    ctx.beginPath();
+    ctx.moveTo(pad.left + 10, pad.top + chartH - 20);
+    ctx.lineTo(pad.left + 22, pad.top + chartH - 20);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillText('보청기 착용 시', pad.left + 28, pad.top + chartH - 16);
+  }
+}
+
+function updateHearingResult() {
+  const resultEl = document.getElementById('hearing-result');
+  const freqs = [250, 500, 1000, 2000, 4000, 8000];
+  const tested = freqs.filter(f => hearingProfile[f] !== undefined);
+
+  if (tested.length < 3) {
+    resultEl.innerHTML = `<p>최소 3개 주파수를 테스트해보세요. (${tested.length}/6 완료)</p>`;
+    return;
+  }
+
+  const weakFreqs = tested.filter(f => hearingProfile[f] < 0.4);
+  const avgLevel = tested.reduce((s, f) => s + hearingProfile[f], 0) / tested.length;
+
+  let msg = '';
+  if (avgLevel > 0.6) {
+    msg = `<strong style="color:#00c8ff;">양호한 청력</strong><br>전반적으로 양호한 수준입니다.`;
+  } else if (avgLevel > 0.35) {
+    msg = `<strong style="color:#ffcc00;">경도 난청 가능성</strong><br>일부 주파수에서 청력이 약합니다. 전문 상담을 권장합니다.`;
+  } else {
+    msg = `<strong style="color:#ff6644;">청력 저하 감지</strong><br>여러 주파수에서 청력이 약한 편입니다. 보청기 착용 시 큰 개선이 예상됩니다.`;
+  }
+
+  if (weakFreqs.length > 0) {
+    const names = weakFreqs.map(f => f >= 1000 ? `${f / 1000}kHz` : `${f}Hz`);
+    msg += `<br><br>약한 주파수: ${names.join(', ')}`;
+    msg += `<br><span style="color:#7b61ff;">→ SoundClear가 이 대역을 자동으로 보강합니다.</span>`;
+  }
+
+  resultEl.innerHTML = `<p>${msg}</p>`;
+}
+
+// ======================================================
+// 3. ENVIRONMENT SIMULATION
+// ======================================================
+let envCanvas, envCtx, envAnimFrame;
+let currentEnv = 'cafe';
+let envHAEnabled = false;
+
+const ENV_CONFIG = {
+  cafe: {
+    label: '카페',
+    noiseSources: [
+      { type: 'ambient', label: '배경 음악', freq: 0.8, amp: 0.6 },
+      { type: 'noise', label: '접시/컵 소리', freq: 3.5, amp: 0.5, burst: true },
+      { type: 'noise', label: '다른 테이블 대화', freq: 1.2, amp: 0.7 },
+      { type: 'voice', label: '상대방 음성', freq: 1.0, amp: 0.5 },
+    ],
+    noiseLevel: 0.65,
+    voiceLevel: 0.5,
+    color: '#ff8844'
+  },
+  street: {
+    label: '길거리',
+    noiseSources: [
+      { type: 'noise', label: '차량 소음', freq: 0.3, amp: 0.9 },
+      { type: 'noise', label: '클랙슨', freq: 2.0, amp: 0.7, burst: true },
+      { type: 'noise', label: '바람 소리', freq: 0.1, amp: 0.4 },
+      { type: 'voice', label: '동행자 음성', freq: 1.0, amp: 0.4 },
+    ],
+    noiseLevel: 0.8,
+    voiceLevel: 0.35,
+    color: '#ff4444'
+  },
+  conversation: {
+    label: '대화',
+    noiseSources: [
+      { type: 'ambient', label: '에어컨', freq: 0.15, amp: 0.2 },
+      { type: 'voice', label: '상대방 음성 1', freq: 1.0, amp: 0.7 },
+      { type: 'voice', label: '상대방 음성 2', freq: 1.5, amp: 0.6 },
+    ],
+    noiseLevel: 0.2,
+    voiceLevel: 0.7,
+    color: '#ffcc00'
+  },
+  nature: {
+    label: '자연',
+    noiseSources: [
+      { type: 'ambient', label: '새소리', freq: 4.0, amp: 0.3 },
+      { type: 'ambient', label: '바람', freq: 0.2, amp: 0.25 },
+      { type: 'ambient', label: '물소리', freq: 1.5, amp: 0.3 },
+      { type: 'voice', label: '동행자 음성', freq: 1.0, amp: 0.6 },
+    ],
+    noiseLevel: 0.3,
+    voiceLevel: 0.55,
+    color: '#44cc66'
+  }
+};
+
+function setupEnvironmentSim() {
+  envCanvas = document.getElementById('env-canvas');
+  envCanvas.width = envCanvas.clientWidth * (isMobile ? 1 : 2);
+  envCanvas.height = envCanvas.clientHeight * (isMobile ? 1 : 2);
+  envCtx = envCanvas.getContext('2d');
+
+  // Environment buttons
+  document.querySelectorAll('.env-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.env-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentEnv = btn.dataset.env;
+    });
+  });
+
+  // Hearing aid toggle
+  const toggle = document.getElementById('env-ha-toggle');
+  toggle.addEventListener('click', () => {
+    envHAEnabled = !envHAEnabled;
+    toggle.classList.toggle('active', envHAEnabled);
+    toggle.querySelector('.toggle-text').textContent = envHAEnabled ? '보청기 ON' : '보청기 OFF';
+  });
+
+  drawEnvironmentSim();
+}
+
+function drawEnvironmentSim() {
+  const ctx = envCtx;
+  const w = envCanvas.width;
+  const h = envCanvas.height;
+  const time = performance.now() * 0.001;
+  const env = ENV_CONFIG[currentEnv];
+
+  ctx.fillStyle = 'rgba(5,5,8,0.15)';
+  ctx.fillRect(0, 0, w, h);
+
+  const centerX = w / 2;
+  const centerY = h / 2;
+
+  // Draw ear/listener icon in center
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 20, 0, Math.PI * 2);
+  ctx.fillStyle = envHAEnabled ? 'rgba(0,200,255,0.8)' : 'rgba(255,255,255,0.3)';
+  ctx.fill();
+  ctx.font = `${isMobile ? 14 : 18}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#050508';
+  ctx.fillText('👂', centerX, centerY);
+  ctx.textBaseline = 'alphabetic';
+
+  // Draw sound sources around the listener
+  env.noiseSources.forEach((src, i) => {
+    const angle = (i / env.noiseSources.length) * Math.PI * 2 - Math.PI / 2;
+    const dist = 80 + (isMobile ? 40 : 80);
+    const sx = centerX + Math.cos(angle) * dist;
+    const sy = centerY + Math.sin(angle) * dist;
+
+    const isVoice = src.type === 'voice';
+    const baseColor = isVoice ? '0,200,255' : '255,68,68';
+
+    // Calculate effective amplitude
+    let effectiveAmp = src.amp;
+    if (src.burst) {
+      effectiveAmp *= 0.5 + Math.abs(Math.sin(time * 2 + i)) * 0.5;
+    }
+
+    // With hearing aid: suppress noise, boost voice
+    let displayAmp = effectiveAmp;
+    if (envHAEnabled) {
+      if (isVoice) {
+        displayAmp = Math.min(1, effectiveAmp * 1.5);
+      } else {
+        displayAmp *= 0.15;
+      }
+    }
+
+    // Expanding rings from source
+    for (let r = 0; r < 3; r++) {
+      const ringPhase = (time * src.freq + r * 0.8) % 3;
+      const ringRadius = 15 + ringPhase * 30 * displayAmp;
+      const ringOpacity = (1 - ringPhase / 3) * displayAmp * 0.6;
+
+      ctx.beginPath();
+      ctx.arc(sx, sy, ringRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${baseColor}, ${ringOpacity})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Sound ray to listener
+    const rayOpacity = displayAmp * 0.4;
+    const grad = ctx.createLinearGradient(sx, sy, centerX, centerY);
+    grad.addColorStop(0, `rgba(${baseColor}, ${rayOpacity})`);
+    grad.addColorStop(1, `rgba(${baseColor}, 0)`);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = displayAmp * 4;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(centerX, centerY);
+    ctx.stroke();
+
+    // Source label
+    ctx.fillStyle = `rgba(${baseColor}, 0.8)`;
+    ctx.font = `${isMobile ? 9 : 12}px "Noto Sans KR", sans-serif`;
+    ctx.textAlign = 'center';
+    const labelY = sy + (sy > centerY ? 30 : -20);
+    ctx.fillText(src.label, sx, labelY);
+
+    // Amplitude bar
+    const barW = 40;
+    const barH = 4;
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillRect(sx - barW / 2, labelY + 6, barW, barH);
+    ctx.fillStyle = `rgba(${baseColor}, 0.7)`;
+    ctx.fillRect(sx - barW / 2, labelY + 6, barW * displayAmp, barH);
+  });
+
+  // Overall clarity indicator
+  const clarity = envHAEnabled
+    ? Math.min(100, Math.floor((env.voiceLevel * 1.5 / (env.voiceLevel * 1.5 + env.noiseLevel * 0.15)) * 100))
+    : Math.floor((env.voiceLevel / (env.voiceLevel + env.noiseLevel)) * 100);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = `bold ${isMobile ? 11 : 14}px "Noto Sans KR", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(`음성 명료도: ${clarity}%`, centerX, h - 20);
+
+  // Clarity bar
+  const cBarW = 120;
+  ctx.fillStyle = 'rgba(255,255,255,0.1)';
+  ctx.fillRect(centerX - cBarW / 2, h - 14, cBarW, 6);
+  const cColor = clarity > 70 ? '#00c8ff' : clarity > 40 ? '#ffcc00' : '#ff4444';
+  ctx.fillStyle = cColor;
+  ctx.fillRect(centerX - cBarW / 2, h - 14, cBarW * clarity / 100, 6);
+
+  // Environment label
+  ctx.fillStyle = env.color;
+  ctx.font = `bold ${isMobile ? 12 : 16}px "Noto Sans KR", sans-serif`;
+  ctx.textAlign = 'left';
+  ctx.fillText(`🔊 ${env.label}`, 16, 28);
+
+  envAnimFrame = requestAnimationFrame(drawEnvironmentSim);
 }
 
 // ===== START =====
