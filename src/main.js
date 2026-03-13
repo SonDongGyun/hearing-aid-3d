@@ -468,6 +468,15 @@ function setupExperienceTabs() {
       panels.forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+
+      // Resize canvases after they become visible
+      requestAnimationFrame(() => {
+        if (tab.dataset.tab === 'hearing') {
+          resizeHearingCanvas();
+        } else if (tab.dataset.tab === 'environment') {
+          resizeEnvCanvas();
+        }
+      });
     });
   });
 }
@@ -481,9 +490,11 @@ let noiseAnimFrame;
 
 function setupNoiseCancellation() {
   const startBtn = document.getElementById('start-mic');
+  const startSimBtn = document.getElementById('start-sim');
   const toggle = document.getElementById('noise-toggle');
 
   startBtn.addEventListener('click', startNoiseMic);
+  startSimBtn.addEventListener('click', startSimulatedNoise);
   toggle.addEventListener('click', () => {
     noiseFilterEnabled = !noiseFilterEnabled;
     toggle.classList.toggle('active', noiseFilterEnabled);
@@ -491,11 +502,14 @@ function setupNoiseCancellation() {
   });
 }
 
+let noiseDemoMode = 'mic'; // 'mic' or 'simulated'
+
 async function startNoiseMic() {
   const overlay = document.getElementById('noise-overlay');
   try {
     noiseMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     overlay.classList.add('hidden');
+    noiseDemoMode = 'mic';
 
     noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
@@ -513,11 +527,86 @@ async function startNoiseMic() {
 
     drawNoiseVisualization(canvas);
   } catch (err) {
-    overlay.innerHTML = `
-      <p style="color:#ff6666;">마이크 접근이 거부되었습니다.</p>
-      <p class="hand-hint">브라우저 설정에서 마이크 권한을 허용해주세요.</p>
-    `;
+    // Fallback: start simulated demo instead
+    startSimulatedNoise();
   }
+}
+
+function startSimulatedNoise() {
+  const overlay = document.getElementById('noise-overlay');
+  overlay.classList.add('hidden');
+  noiseDemoMode = 'simulated';
+
+  noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Create simulated ambient sound (noise + voice tones)
+  const bufferSize = noiseAudioCtx.sampleRate * 2;
+  const noiseBuffer = noiseAudioCtx.createBuffer(1, bufferSize, noiseAudioCtx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+  const noiseSrc = noiseAudioCtx.createBufferSource();
+  noiseSrc.buffer = noiseBuffer;
+  noiseSrc.loop = true;
+
+  // Voice harmonics
+  const voiceOsc1 = noiseAudioCtx.createOscillator();
+  voiceOsc1.frequency.value = 400;
+  voiceOsc1.type = 'sawtooth';
+  const voiceOsc2 = noiseAudioCtx.createOscillator();
+  voiceOsc2.frequency.value = 800;
+  const voiceOsc3 = noiseAudioCtx.createOscillator();
+  voiceOsc3.frequency.value = 1600;
+
+  // Speech rhythm modulation
+  const modOsc = noiseAudioCtx.createOscillator();
+  modOsc.frequency.value = 3;
+  const modGain = noiseAudioCtx.createGain();
+  modGain.gain.value = 0.4;
+  modOsc.connect(modGain);
+
+  const voiceGain = noiseAudioCtx.createGain();
+  voiceGain.gain.value = 0.03;
+  modGain.connect(voiceGain.gain);
+
+  const noiseGain = noiseAudioCtx.createGain();
+  noiseGain.gain.value = 0.04;
+
+  // Mix into analyser
+  noiseAnalyser = noiseAudioCtx.createAnalyser();
+  noiseAnalyser.fftSize = 2048;
+  noiseAnalyser.smoothingTimeConstant = 0.8;
+
+  noiseSrc.connect(noiseGain);
+  noiseGain.connect(noiseAnalyser);
+
+  [voiceOsc1, voiceOsc2, voiceOsc3].forEach(osc => {
+    const g = noiseAudioCtx.createGain();
+    g.gain.value = 0.015;
+    osc.connect(g);
+    g.connect(voiceGain);
+  });
+  voiceGain.connect(noiseAnalyser);
+
+  // Connect to output so user can hear
+  const masterGain = noiseAudioCtx.createGain();
+  masterGain.gain.value = 0.5;
+  noiseAnalyser.connect(masterGain);
+  masterGain.connect(noiseAudioCtx.destination);
+
+  noiseSrc.start();
+  voiceOsc1.start();
+  voiceOsc2.start();
+  voiceOsc3.start();
+  modOsc.start();
+
+  noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
+
+  const canvas = document.getElementById('noise-canvas');
+  canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+  canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
+
+  drawNoiseVisualization(canvas);
 }
 
 function drawNoiseVisualization(canvas) {
@@ -604,7 +693,7 @@ function drawNoiseVisualization(canvas) {
     ctx.font = `${isMobile ? 10 : 12}px "Noto Sans KR", sans-serif`;
     ctx.fillStyle = 'rgba(255,255,255,0.4)';
     ctx.textAlign = 'left';
-    ctx.fillText('원본 입력', 10, 20);
+    ctx.fillText(noiseDemoMode === 'mic' ? '마이크 입력' : '시뮬레이션 음원', 10, 20);
     ctx.fillText(noiseFilterEnabled ? 'AI 소음제거 적용' : '처리 없음', 10, h - 10);
 
     // Frequency labels
@@ -666,11 +755,21 @@ let hearingCanvasCtx;
 let hearingAnimFrame;
 const hearingProfile = {};
 
+function resizeHearingCanvas() {
+  const canvas = document.getElementById('hearing-canvas');
+  if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+    canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+    canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
+    hearingCanvasCtx = canvas.getContext('2d');
+    updateHearingChart();
+  }
+}
+
 function setupHearingTest() {
   const canvas = document.getElementById('hearing-canvas');
-  canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
-  canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
   hearingCanvasCtx = canvas.getContext('2d');
+  // Defer initial sizing — panel may be hidden
+  resizeHearingCanvas();
 
   // Play buttons
   document.querySelectorAll('.freq-play').forEach(btn => {
@@ -1306,11 +1405,17 @@ function stopEnvAudio() {
   envIsPlaying = false;
 }
 
+function resizeEnvCanvas() {
+  if (envCanvas && envCanvas.clientWidth > 0 && envCanvas.clientHeight > 0) {
+    envCanvas.width = envCanvas.clientWidth * (isMobile ? 1 : 2);
+    envCanvas.height = envCanvas.clientHeight * (isMobile ? 1 : 2);
+  }
+}
+
 function setupEnvironmentSim() {
   envCanvas = document.getElementById('env-canvas');
-  envCanvas.width = envCanvas.clientWidth * (isMobile ? 1 : 2);
-  envCanvas.height = envCanvas.clientHeight * (isMobile ? 1 : 2);
   envCtx = envCanvas.getContext('2d');
+  resizeEnvCanvas();
 
   // Environment buttons
   document.querySelectorAll('.env-btn').forEach(btn => {
@@ -1352,9 +1457,14 @@ function setupEnvironmentSim() {
 }
 
 function drawEnvironmentSim() {
+  // Auto-resize if canvas was initialized while hidden
+  if (envCanvas.width === 0 || envCanvas.height === 0) {
+    resizeEnvCanvas();
+  }
   const ctx = envCtx;
   const w = envCanvas.width;
   const h = envCanvas.height;
+  if (w === 0 || h === 0) { envAnimFrame = requestAnimationFrame(drawEnvironmentSim); return; }
   const time = performance.now() * 0.001;
   const env = ENV_CONFIG[currentEnv];
 
