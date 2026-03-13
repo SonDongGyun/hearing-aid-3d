@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SoundClear — 프리미엄 보청기</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- Loading Screen -->
+  <div id="loader">
+    <div class="loader-inner">
+      <div class="loader-ring"></div>
+      <p>경험을 준비하고 있습니다...</p>
+    </div>
+  </div>
+
+  <!-- Hand Tracking Camera (hidden) -->
+  <video id="webcam" style="display:none"></video>
+
+  <!-- Three.js Canvas -->
+  <canvas id="three-canvas"></canvas>
+
+  <!-- Hand Cursor -->
+  <div id="hand-cursor">
+    <svg viewBox="0 0 40 40" width="40" height="40">
+      <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(0,200,255,0.8)" stroke-width="2"/>
+      <circle cx="20" cy="20" r="4" fill="rgba(0,200,255,0.9)"/>
+    </svg>
+  </div>
+
+  <!-- Navigation -->
+  <nav id="nav">
+    <div class="nav-logo">
+      <span class="logo-icon">◉</span>
+      <span>SoundClear</span>
+    </div>
+    <div class="nav-links">
+      <a href="#hero">홈</a>
+      <a href="#features">기술</a>
+      <a href="#product">제품</a>
+      <a href="#hand-section">체험</a>
+      <a href="#contact">상담</a>
+    </div>
+    <button class="nav-cta">무료 상담</button>
+    <button class="mobile-menu-btn" id="mobile-menu-btn">☰</button>
+  </nav>
+
+  <!-- Mobile Navigation -->
+  <div class="mobile-nav" id="mobile-nav">
+    <button class="mobile-nav-close" id="mobile-nav-close">✕</button>
+    <a href="#hero" onclick="closeMobileNav()">홈</a>
+    <a href="#features" onclick="closeMobileNav()">기술</a>
+    <a href="#product" onclick="closeMobileNav()">제품</a>
+    <a href="#hand-section" onclick="closeMobileNav()">체험</a>
+    <a href="#contact" onclick="closeMobileNav()">상담</a>
+  </div>
+
+  <!-- Hero Section -->
+  <section id="hero" class="section">
+    <div class="hero-content">
+      <div class="hero-badge">AI 기반 차세대 보청기</div>
+      <h1>
+        <span class="line">소리의 새로운</span>
+        <span class="line highlight">경험을 만나다</span>
+      </h1>
+      <p class="hero-desc">
+        최첨단 AI 음향 기술과 인체공학적 디자인이 만나<br/>
+        당신의 일상에 자연스러운 소리를 되찾아 드립니다.
+      </p>
+      <div class="hero-actions">
+        <button class="btn-primary">제품 알아보기</button>
+        <button class="btn-secondary">
+          <span class="play-icon">▶</span> 영상 보기
+        </button>
+      </div>
+      <div class="hero-stats">
+        <div class="stat">
+          <span class="stat-num" data-target="98">0</span><span class="stat-suffix">%</span>
+          <span class="stat-label">고객 만족도</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num" data-target="50000">0</span><span class="stat-suffix">+</span>
+          <span class="stat-label">사용자</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num" data-target="15">0</span><span class="stat-suffix">년</span>
+          <span class="stat-label">기술 연구</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sound Wave Divider -->
+  <div class="wave-divider">
+    <svg viewBox="0 0 1440 120" preserveAspectRatio="none">
+      <path d="M0,60 C360,120 720,0 1080,60 C1260,90 1380,30 1440,60 L1440,120 L0,120 Z" fill="#0a0a0f"/>
+    </svg>
+  </div>
+
+  <!-- Features Section -->
+  <section id="features" class="section section-dark">
+    <div class="section-container">
+      <div class="section-header">
+        <span class="section-tag">TECHNOLOGY</span>
+        <h2>혁신적인 기술</h2>
+        <p>최신 AI와 음향공학이 만든 차별화된 경험</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card" data-aos="up">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" width="48" height="48"><circle cx="24" cy="24" r="20" fill="none" stroke="url(#grad1)" stroke-width="2"/><path d="M16 24c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="none" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/><path d="M12 24c0-6.6 5.4-12 12-12s12 5.4 12 12" fill="none" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/><circle cx="24" cy="24" r="3" fill="url(#grad1)"/><defs><linearGradient id="grad1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00c8ff"/><stop offset="100%" stop-color="#7b61ff"/></linearGradient></defs></svg>
+          </div>
+          <h3>AI 소음 제거</h3>
+          <p>딥러닝 알고리즘이 실시간으로 주변 소음을 분석하고 제거하여 선명한 음성만 전달합니다.</p>
+        </div>
+        <div class="feature-card" data-aos="up" style="animation-delay: 0.1s">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" width="48" height="48"><rect x="8" y="14" width="32" height="20" rx="4" fill="none" stroke="url(#grad1)" stroke-width="2"/><circle cx="20" cy="24" r="5" fill="none" stroke="url(#grad1)" stroke-width="2"/><line x1="28" y1="19" x2="36" y2="19" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/><line x1="28" y1="24" x2="36" y2="24" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/><line x1="28" y1="29" x2="33" y2="29" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <h3>맞춤형 피팅</h3>
+          <p>3D 귀 스캔 기술로 개인의 귀 형태에 완벽하게 맞는 커스텀 보청기를 제작합니다.</p>
+        </div>
+        <div class="feature-card" data-aos="up" style="animation-delay: 0.2s">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" width="48" height="48"><path d="M24 8v32M8 24h32" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/><circle cx="24" cy="24" r="8" fill="none" stroke="url(#grad1)" stroke-width="2"/><circle cx="24" cy="24" r="16" fill="none" stroke="url(#grad1)" stroke-width="1" opacity="0.5"/></svg>
+          </div>
+          <h3>360° 방향 인식</h3>
+          <p>멀티 마이크 배열 기술로 소리의 방향을 정확히 감지하여 자연스러운 청취 경험을 제공합니다.</p>
+        </div>
+        <div class="feature-card" data-aos="up" style="animation-delay: 0.3s">
+          <div class="feature-icon">
+            <svg viewBox="0 0 48 48" width="48" height="48"><rect x="14" y="6" width="20" height="36" rx="4" fill="none" stroke="url(#grad1)" stroke-width="2"/><circle cx="24" cy="34" r="3" fill="url(#grad1)"/><line x1="20" y1="12" x2="28" y2="12" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <h3>스마트 연동</h3>
+          <p>블루투스 5.3으로 스마트폰, TV, 음악기기와 원활하게 연결됩니다. 전용 앱으로 간편 조절.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Product Section -->
+  <section id="product" class="section">
+    <div class="section-container">
+      <div class="section-header">
+        <span class="section-tag">PRODUCT</span>
+        <h2>당신을 위한 보청기</h2>
+        <p>스크롤하여 제품을 자세히 살펴보세요</p>
+      </div>
+      <div class="product-showcase">
+        <div class="product-info">
+          <div class="product-detail active" data-step="0">
+            <span class="detail-tag">DESIGN</span>
+            <h3>초경량 인체공학 디자인</h3>
+            <p>2.1g의 초경량 설계로 하루 종일 착용해도 편안합니다. 피부 친화적 의료용 실리콘 소재를 사용합니다.</p>
+          </div>
+          <div class="product-detail" data-step="1">
+            <span class="detail-tag">BATTERY</span>
+            <h3>48시간 연속 사용</h3>
+            <p>고효율 배터리 기술로 한 번 충전에 48시간 사용 가능. 무선 충전 케이스 포함.</p>
+          </div>
+          <div class="product-detail" data-step="2">
+            <span class="detail-tag">SOUND</span>
+            <h3>하이파이 사운드</h3>
+            <p>96kHz 샘플링 레이트의 고해상도 오디오 처리로 음악도 자연스럽게 즐길 수 있습니다.</p>
+          </div>
+        </div>
+        <div class="product-3d-container">
+          <!-- Three.js product model renders here -->
+          <div class="product-rotate-hint">
+            <span class="desktop-hint">🖐️ 손을 움직여 제품을 회전하세요</span>
+            <span class="mobile-hint">📱 화면을 터치하거나 기기를 기울여 회전하세요</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Hand Interaction Section -->
+  <section id="hand-section" class="section section-dark">
+    <div class="section-container">
+      <div class="section-header">
+        <span class="section-tag">INTERACTIVE</span>
+        <h2>손으로 체험하세요</h2>
+        <p>웹캠을 활성화하고 손을 움직여 음파를 제어해보세요</p>
+      </div>
+      <div class="hand-demo">
+        <div class="hand-canvas-wrapper">
+          <canvas id="hand-canvas"></canvas>
+          <div class="hand-overlay" id="hand-overlay">
+            <button class="btn-primary" id="start-camera">
+              <span>📷</span> 카메라 시작하기
+            </button>
+            <p class="hand-hint">손을 펼치면 음파가 퍼지고, 주먹을 쥐면 음파가 모입니다</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Testimonials -->
+  <section id="testimonials" class="section">
+    <div class="section-container">
+      <div class="section-header">
+        <span class="section-tag">REVIEWS</span>
+        <h2>고객의 목소리</h2>
+      </div>
+      <div class="testimonial-grid">
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p>"10년간 다양한 보청기를 사용해봤지만, SoundClear는 차원이 다릅니다. 마치 보청기를 안 끼고 있는 것 같아요."</p>
+          <div class="testimonial-author">
+            <div class="author-avatar">김</div>
+            <div>
+              <strong>김영수</strong>
+              <span>62세 · 사용 8개월</span>
+            </div>
+          </div>
+        </div>
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p>"손녀의 속삭이는 소리까지 들을 수 있게 되었어요. 앱으로 조절도 간편하고, 정말 감사합니다."</p>
+          <div class="testimonial-author">
+            <div class="author-avatar">박</div>
+            <div>
+              <strong>박미경</strong>
+              <span>71세 · 사용 1년</span>
+            </div>
+          </div>
+        </div>
+        <div class="testimonial-card">
+          <div class="testimonial-stars">★★★★★</div>
+          <p>"회의 중에 상대방 말을 놓치는 일이 없어졌습니다. 소음 제거 기능이 정말 놀랍습니다."</p>
+          <div class="testimonial-author">
+            <div class="author-avatar">이</div>
+            <div>
+              <strong>이준호</strong>
+              <span>55세 · 사용 6개월</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Contact / CTA Section -->
+  <section id="contact" class="section section-dark">
+    <div class="section-container">
+      <div class="cta-block">
+        <h2>무료 청력 상담을 받아보세요</h2>
+        <p>전문 청각사가 1:1로 맞춤 상담을 진행합니다.<br/>온라인으로 간편하게 예약하세요.</p>
+        <form class="cta-form" onsubmit="event.preventDefault()">
+          <input type="text" placeholder="이름" required />
+          <input type="tel" placeholder="연락처" required />
+          <button type="submit" class="btn-primary btn-large">무료 상담 신청</button>
+        </form>
+        <p class="cta-note">상담은 무료이며, 강제 구매 권유가 없습니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-content">
+      <div class="footer-brand">
+        <span class="logo-icon">◉</span>
+        <span>SoundClear</span>
+        <p>더 선명한 세상을 위한 기술</p>
+      </div>
+      <div class="footer-links">
+        <div>
+          <h4>제품</h4>
+          <a href="#">SoundClear Pro</a>
+          <a href="#">SoundClear Lite</a>
+          <a href="#">액세서리</a>
+        </div>
+        <div>
+          <h4>고객지원</h4>
+          <a href="#">자주 묻는 질문</a>
+          <a href="#">사용 가이드</a>
+          <a href="#">A/S 신청</a>
+        </div>
+        <div>
+          <h4>회사</h4>
+          <a href="#">회사 소개</a>
+          <a href="#">기술 연구</a>
+          <a href="#">채용</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2026 SoundClear. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
