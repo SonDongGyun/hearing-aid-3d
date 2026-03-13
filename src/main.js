@@ -590,40 +590,71 @@ function stopNoiseCancellation() {
 
 async function startNoiseMic() {
   const overlay = document.getElementById('noise-overlay');
+
+  // Check if getUserMedia is available (requires HTTPS)
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    overlay.innerHTML = `
+      <p style="color:#ff6666;">이 브라우저에서 마이크를 사용할 수 없습니다.</p>
+      <p class="hand-hint">HTTPS 환경에서 접속하거나, 시뮬레이션 모드를 사용해주세요.</p>
+      <button class="btn-secondary" onclick="startSimulatedNoise()" style="margin-top:12px;">
+        <span>🔊</span> 시뮬레이션으로 체험
+      </button>
+    `;
+    return;
+  }
+
   try {
     noiseMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    overlay.classList.add('hidden');
-    document.getElementById('noise-stop-wrap').style.display = 'block';
-    noiseDemoMode = 'mic';
-
-    noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
-    const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
-
-    // Bandpass filter for AI noise cancellation effect
-    noiseBandpassFilter = noiseAudioCtx.createBiquadFilter();
-    noiseBandpassFilter.type = 'bandpass';
-    noiseBandpassFilter.frequency.value = 5000; // wide = no filter initially
-    noiseBandpassFilter.Q.value = 0.01;
-
-    noiseAnalyser = noiseAudioCtx.createAnalyser();
-    noiseAnalyser.fftSize = 2048;
-    noiseAnalyser.smoothingTimeConstant = 0.8;
-
-    source.connect(noiseBandpassFilter);
-    noiseBandpassFilter.connect(noiseAnalyser);
-
-    noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
-
-    const canvas = document.getElementById('noise-canvas');
-    canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
-    canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
-
-    drawNoiseVisualization(canvas);
   } catch (err) {
-    startSimulatedNoise();
+    console.warn('Mic access error:', err.name, err.message);
+    // Show specific error instead of silently falling back
+    const msg = err.name === 'NotAllowedError'
+      ? '마이크 권한이 거부되었습니다.<br>브라우저 설정에서 마이크 권한을 허용해주세요.'
+      : err.name === 'NotFoundError'
+        ? '마이크 장치를 찾을 수 없습니다.'
+        : `마이크 접근 오류: ${err.message}`;
+    overlay.innerHTML = `
+      <p style="color:#ff6666;">${msg}</p>
+      <button class="btn-secondary" onclick="startSimulatedNoise()" style="margin-top:12px;">
+        <span>🔊</span> 시뮬레이션으로 체험하기
+      </button>
+    `;
+    return;
   }
+
+  // Mic access granted — proceed
+  overlay.classList.add('hidden');
+  document.getElementById('noise-stop-wrap').style.display = 'block';
+  noiseDemoMode = 'mic';
+
+  noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
+  const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
+
+  // Bandpass filter for AI noise cancellation effect
+  noiseBandpassFilter = noiseAudioCtx.createBiquadFilter();
+  noiseBandpassFilter.type = 'bandpass';
+  noiseBandpassFilter.frequency.value = 5000; // wide = no filter initially
+  noiseBandpassFilter.Q.value = 0.01;
+
+  noiseAnalyser = noiseAudioCtx.createAnalyser();
+  noiseAnalyser.fftSize = 2048;
+  noiseAnalyser.smoothingTimeConstant = 0.8;
+
+  source.connect(noiseBandpassFilter);
+  noiseBandpassFilter.connect(noiseAnalyser);
+
+  noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
+
+  const canvas = document.getElementById('noise-canvas');
+  canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+  canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
+
+  drawNoiseVisualization(canvas);
 }
+
+// Expose for inline onclick in error fallback
+window.startSimulatedNoise = startSimulatedNoise;
 
 async function startSimulatedNoise() {
   const overlay = document.getElementById('noise-overlay');
