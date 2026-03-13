@@ -516,15 +516,15 @@ function applyNoiseFilter() {
   const t = noiseAudioCtx.currentTime;
 
   if (noiseDemoMode === 'simulated') {
-    // Simulated: directly change gain of noise vs voice
+    // WAV-based: modulate noise vs voice gain
     if (noiseNoiseGainNode) {
       noiseNoiseGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 0.003 : 0.06, t + 0.3
+        noiseFilterEnabled ? 0.05 : 1.0, t + 0.3
       );
     }
     if (noiseVoiceGainNode) {
       noiseVoiceGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 0.12 : 0.04, t + 0.3
+        noiseFilterEnabled ? 2.0 : 1.0, t + 0.3
       );
     }
   } else if (noiseDemoMode === 'mic' && noiseBandpassFilter) {
@@ -597,6 +597,7 @@ async function startNoiseMic() {
     noiseDemoMode = 'mic';
 
     noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
     const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
 
     // Bandpass filter for AI noise cancellation effect
@@ -624,123 +625,95 @@ async function startNoiseMic() {
   }
 }
 
-function startSimulatedNoise() {
+async function startSimulatedNoise() {
   const overlay = document.getElementById('noise-overlay');
   overlay.classList.add('hidden');
   document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'simulated';
 
   noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // iOS/Android require resume after user gesture
+  if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
   const ctx = noiseAudioCtx;
 
-  // === NOISE SOURCES ===
-  const noiseGain = ctx.createGain();
-  noiseGain.gain.value = 0.06;
-  noiseNoiseGainNode = noiseGain;
+  // Load cafe audio sample (realistic ambient with voices)
+  try {
+    const response = await fetch('/audio/cafe.wav');
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
 
-  // White noise (general ambient)
-  const bufferSize = ctx.sampleRate * 2;
-  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const bufData = noiseBuffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) bufData[i] = Math.random() * 2 - 1;
+    // Play the full mix as a loop
+    const fullSource = ctx.createBufferSource();
+    fullSource.buffer = audioBuffer;
+    fullSource.loop = true;
+    noiseSimNodes.push(fullSource);
 
-  const noiseSrc = ctx.createBufferSource();
-  noiseSrc.buffer = noiseBuffer;
-  noiseSrc.loop = true;
-  noiseSrc.connect(noiseGain);
-  noiseSrc.start();
-  noiseSimNodes.push(noiseSrc);
+    // === NOISE PATH: lowpass + highpass to isolate non-voice ===
+    const noiseLP = ctx.createBiquadFilter();
+    noiseLP.type = 'lowpass';
+    noiseLP.frequency.value = 250;
+    noiseLP.Q.value = 0.5;
 
-  // Low rumble
-  const rumbleOsc = ctx.createOscillator();
-  rumbleOsc.type = 'sine';
-  rumbleOsc.frequency.value = 80;
-  const rumbleG = ctx.createGain();
-  rumbleG.gain.value = 0.5;
-  rumbleOsc.connect(rumbleG);
-  rumbleG.connect(noiseGain);
-  rumbleOsc.start();
-  noiseSimNodes.push(rumbleOsc);
+    const noiseHP = ctx.createBiquadFilter();
+    noiseHP.type = 'highpass';
+    noiseHP.frequency.value = 3500;
+    noiseHP.Q.value = 0.5;
 
-  // Mid noise (chatter-like)
-  const chatterSrc = ctx.createBufferSource();
-  chatterSrc.buffer = noiseBuffer;
-  chatterSrc.loop = true;
-  const chatterBP = ctx.createBiquadFilter();
-  chatterBP.type = 'bandpass';
-  chatterBP.frequency.value = 1000;
-  chatterBP.Q.value = 0.8;
-  const chatterG = ctx.createGain();
-  chatterG.gain.value = 0.7;
-  chatterSrc.connect(chatterBP);
-  chatterBP.connect(chatterG);
-  chatterG.connect(noiseGain);
-  chatterSrc.start();
-  noiseSimNodes.push(chatterSrc);
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = 1.0;
+    noiseNoiseGainNode = noiseGain;
 
-  // === VOICE SOURCES ===
-  const voiceGain = ctx.createGain();
-  voiceGain.gain.value = 0.04;
-  noiseVoiceGainNode = voiceGain;
+    // Route: source → lowpass → noiseGain (low rumble)
+    //        source → highpass → noiseGain (high noise)
+    fullSource.connect(noiseLP);
+    noiseLP.connect(noiseGain);
+    fullSource.connect(noiseHP);
+    noiseHP.connect(noiseGain);
 
-  // Speech harmonics with natural modulation
-  const voiceFreqs = [300, 600, 1200, 2400];
-  voiceFreqs.forEach((f, i) => {
-    const osc = ctx.createOscillator();
-    osc.type = i === 0 ? 'sawtooth' : 'sine';
-    osc.frequency.value = f;
+    // === VOICE PATH: bandpass to isolate speech ===
+    const voiceBP = ctx.createBiquadFilter();
+    voiceBP.type = 'bandpass';
+    voiceBP.frequency.value = 1200;
+    voiceBP.Q.value = 0.4;
 
-    // Vibrato
-    const vib = ctx.createOscillator();
-    vib.frequency.value = 4.5 + Math.random() * 2;
-    const vibG = ctx.createGain();
-    vibG.gain.value = f * 0.015;
-    vib.connect(vibG);
-    vibG.connect(osc.frequency);
-    vib.start();
-    noiseSimNodes.push(vib);
+    const voiceGain = ctx.createGain();
+    voiceGain.gain.value = 1.0;
+    noiseVoiceGainNode = voiceGain;
 
-    // Syllable amplitude modulation
-    const ampMod = ctx.createOscillator();
-    ampMod.frequency.value = 2.5 + Math.random();
-    const ampModG = ctx.createGain();
-    ampModG.gain.value = 0.5;
-    ampMod.connect(ampModG);
-    ampMod.start();
-    noiseSimNodes.push(ampMod);
+    fullSource.connect(voiceBP);
+    voiceBP.connect(voiceGain);
 
-    const oscGain = ctx.createGain();
-    oscGain.gain.value = i === 0 ? 0.6 : 0.3 / (i + 1);
-    ampModG.connect(oscGain.gain);
+    // === MIX & ANALYSE ===
+    noiseAnalyser = ctx.createAnalyser();
+    noiseAnalyser.fftSize = 2048;
+    noiseAnalyser.smoothingTimeConstant = 0.8;
 
-    osc.connect(oscGain);
-    oscGain.connect(voiceGain);
-    osc.start();
-    noiseSimNodes.push(osc);
-  });
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 1.5;
 
-  // === MIX & OUTPUT ===
-  noiseAnalyser = ctx.createAnalyser();
-  noiseAnalyser.fftSize = 2048;
-  noiseAnalyser.smoothingTimeConstant = 0.8;
+    noiseGain.connect(noiseAnalyser);
+    voiceGain.connect(noiseAnalyser);
+    noiseAnalyser.connect(masterGain);
+    masterGain.connect(ctx.destination);
 
-  const masterGain = ctx.createGain();
-  masterGain.gain.value = 0.6;
+    fullSource.start();
 
-  noiseGain.connect(noiseAnalyser);
-  voiceGain.connect(noiseAnalyser);
-  noiseAnalyser.connect(masterGain);
-  masterGain.connect(ctx.destination);
+    noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
 
-  noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
+    const canvas = document.getElementById('noise-canvas');
+    canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
+    canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
 
-  const canvas = document.getElementById('noise-canvas');
-  canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
-  canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
-
-  // Apply current filter state
-  applyNoiseFilter();
-  drawNoiseVisualization(canvas);
+    applyNoiseFilter();
+    drawNoiseVisualization(canvas);
+  } catch (err) {
+    console.error('Failed to load audio sample:', err);
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <p style="color:#ff6666;">오디오 샘플을 불러올 수 없습니다.</p>
+      <p class="hand-hint">네트워크 연결을 확인해주세요.</p>
+    `;
+  }
 }
 
 function drawNoiseVisualization(canvas) {
@@ -962,6 +935,7 @@ function playTone(freq, volume) {
   if (!hearingAudioCtx) {
     hearingAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
+  if (hearingAudioCtx.state === 'suspended') hearingAudioCtx.resume();
 
   const osc = hearingAudioCtx.createOscillator();
   const gain = hearingAudioCtx.createGain();
@@ -1290,227 +1264,94 @@ const ENV_CONFIG = {
   }
 };
 
-// --- Audio Synthesis Engine ---
-function createWhiteNoise(ctx, duration) {
-  const sampleRate = ctx.sampleRate;
-  const length = sampleRate * duration;
-  const buffer = ctx.createBuffer(1, length, sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < length; i++) {
-    data[i] = Math.random() * 2 - 1;
+// --- WAV-based Audio Engine ---
+const envAudioBuffers = {}; // cached decoded audio buffers
+
+async function loadEnvAudioBuffer(envKey) {
+  if (envAudioBuffers[envKey]) return envAudioBuffers[envKey];
+  const response = await fetch(`/audio/${envKey}.wav`);
+  const arrayBuffer = await response.arrayBuffer();
+  if (!envAudioCtx) {
+    envAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  return buffer;
+  envAudioBuffers[envKey] = await envAudioCtx.decodeAudioData(arrayBuffer);
+  return envAudioBuffers[envKey];
 }
 
-function buildEnvAudio(envKey) {
+async function buildEnvAudio(envKey) {
   stopEnvAudio();
 
   if (!envAudioCtx) {
     envAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
+  if (envAudioCtx.state === 'suspended') await envAudioCtx.resume();
   const ctx = envAudioCtx;
-  const env = ENV_CONFIG[envKey];
-  const masterGain = ctx.createGain();
-  masterGain.gain.value = 0.8;
-  masterGain.connect(ctx.destination);
 
-  const noiseBuffer = createWhiteNoise(ctx, 4);
+  try {
+    const buffer = await loadEnvAudioBuffer(envKey);
 
-  env.audio.forEach(src => {
-    const nodes = {};
-    // Per-source gain node (this is what we modulate for HA effect)
-    const srcGain = ctx.createGain();
-    srcGain.gain.value = src.gain;
-    srcGain.connect(masterGain);
-    nodes.gain = srcGain;
-    nodes.isVoice = src.isVoice;
-    nodes.baseGain = src.gain;
-    nodes.sources = [];
+    // Play the WAV file on loop
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
 
-    switch (src.synthType) {
-      case 'voice': {
-        // Simulate speech: multiple harmonics with vibrato
-        src.freqs.forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          osc.type = i === 0 ? 'sawtooth' : 'sine';
-          // Add natural vibrato
-          const vibrato = ctx.createOscillator();
-          const vibratoGain = ctx.createGain();
-          vibrato.frequency.value = 4 + Math.random() * 2; // 4-6 Hz vibrato
-          vibratoGain.gain.value = f * 0.02; // subtle pitch variation
-          vibrato.connect(vibratoGain);
-          vibratoGain.connect(osc.frequency);
-          vibrato.start();
+    // === NOISE PATH: frequencies outside voice band ===
+    const noiseLP = ctx.createBiquadFilter();
+    noiseLP.type = 'lowpass';
+    noiseLP.frequency.value = 250;
 
-          osc.frequency.value = f;
-          // Amplitude modulation for natural speech rhythm
-          const ampMod = ctx.createOscillator();
-          const ampModGain = ctx.createGain();
-          ampMod.frequency.value = 2 + Math.random() * 2; // syllable rate
-          ampModGain.gain.value = 0.4;
-          ampMod.connect(ampModGain);
+    const noiseHP = ctx.createBiquadFilter();
+    noiseHP.type = 'highpass';
+    noiseHP.frequency.value = 3500;
 
-          const ampGain = ctx.createGain();
-          ampGain.gain.value = i === 0 ? 0.5 : 0.3 / (i + 1);
-          ampModGain.connect(ampGain.gain);
-          ampMod.start();
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = 1.0;
 
-          osc.connect(ampGain);
-          ampGain.connect(srcGain);
-          osc.start();
+    source.connect(noiseLP);
+    noiseLP.connect(noiseGain);
+    source.connect(noiseHP);
+    noiseHP.connect(noiseGain);
 
-          nodes.sources.push(osc, vibrato, ampMod);
-        });
-        break;
-      }
-      case 'music': {
-        src.freqs.forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          osc.type = 'sine';
-          osc.frequency.value = f;
-          const g = ctx.createGain();
-          g.gain.value = 0.3 / (i + 1);
-          // Slow tremolo
-          const trem = ctx.createOscillator();
-          const tremG = ctx.createGain();
-          trem.frequency.value = 0.3 + i * 0.1;
-          tremG.gain.value = 0.15;
-          trem.connect(tremG);
-          tremG.connect(g.gain);
-          trem.start();
+    // === VOICE PATH: speech band ===
+    const voiceBP = ctx.createBiquadFilter();
+    voiceBP.type = 'bandpass';
+    voiceBP.frequency.value = 1200;
+    voiceBP.Q.value = 0.4;
 
-          osc.connect(g);
-          g.connect(srcGain);
-          osc.start();
-          nodes.sources.push(osc, trem);
-        });
-        break;
-      }
-      case 'chatter':
-      case 'rumble':
-      case 'wind':
-      case 'water': {
-        // Filtered noise
-        const noiseSrc = ctx.createBufferSource();
-        noiseSrc.buffer = noiseBuffer;
-        noiseSrc.loop = true;
+    const voiceGain = ctx.createGain();
+    voiceGain.gain.value = 1.0;
 
-        const bp = ctx.createBiquadFilter();
-        bp.type = 'bandpass';
-        bp.frequency.value = (src.freqLow + src.freqHigh) / 2;
-        bp.Q.value = bp.frequency.value / (src.freqHigh - src.freqLow);
+    source.connect(voiceBP);
+    voiceBP.connect(voiceGain);
 
-        noiseSrc.connect(bp);
-        bp.connect(srcGain);
-        noiseSrc.start();
-        nodes.sources.push(noiseSrc);
-        break;
-      }
-      case 'clatter': {
-        // Periodic high-frequency clicks
-        const noiseSrc = ctx.createBufferSource();
-        noiseSrc.buffer = noiseBuffer;
-        noiseSrc.loop = true;
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = src.freq;
-        hp.Q.value = 2;
-        // Gate it with a slow square-ish LFO for intermittent clatter
-        const lfo = ctx.createOscillator();
-        lfo.frequency.value = 1.5;
-        const lfoGain = ctx.createGain();
-        lfoGain.gain.value = 0.5;
-        lfo.connect(lfoGain);
-        const gateGain = ctx.createGain();
-        gateGain.gain.value = 0.5;
-        lfoGain.connect(gateGain.gain);
-        lfo.start();
+    // === OUTPUT ===
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 1.5;
 
-        noiseSrc.connect(hp);
-        hp.connect(gateGain);
-        gateGain.connect(srcGain);
-        noiseSrc.start();
-        nodes.sources.push(noiseSrc, lfo);
-        break;
-      }
-      case 'honk': {
-        const osc = ctx.createOscillator();
-        osc.type = 'square';
-        osc.frequency.value = src.freq;
-        // Intermittent honking
-        const lfo = ctx.createOscillator();
-        lfo.frequency.value = 0.4;
-        const lfoGain = ctx.createGain();
-        lfoGain.gain.value = 0.5;
-        lfo.connect(lfoGain);
-        const gate = ctx.createGain();
-        gate.gain.value = 0.5;
-        lfoGain.connect(gate.gain);
-        lfo.start();
+    noiseGain.connect(masterGain);
+    voiceGain.connect(masterGain);
+    masterGain.connect(ctx.destination);
 
-        osc.connect(gate);
-        gate.connect(srcGain);
-        osc.start();
-        nodes.sources.push(osc, lfo);
-        break;
-      }
-      case 'hum': {
-        const osc = ctx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.value = src.freq;
-        osc.connect(srcGain);
-        osc.start();
-        // Add harmonic
-        const osc2 = ctx.createOscillator();
-        osc2.type = 'sine';
-        osc2.frequency.value = src.freq * 2;
-        const g2 = ctx.createGain();
-        g2.gain.value = 0.3;
-        osc2.connect(g2);
-        g2.connect(srcGain);
-        osc2.start();
-        nodes.sources.push(osc, osc2);
-        break;
-      }
-      case 'birds': {
-        // Chirping with frequency sweeps
-        src.freqs.forEach((f, i) => {
-          const osc = ctx.createOscillator();
-          osc.type = 'sine';
-          osc.frequency.value = f;
-          // Chirp modulation
-          const chirpLfo = ctx.createOscillator();
-          chirpLfo.frequency.value = 6 + i * 3;
-          const chirpGain = ctx.createGain();
-          chirpGain.gain.value = f * 0.15;
-          chirpLfo.connect(chirpGain);
-          chirpGain.connect(osc.frequency);
-          chirpLfo.start();
-          // Amplitude gate for intermittent chirps
-          const ampLfo = ctx.createOscillator();
-          ampLfo.frequency.value = 0.5 + i * 0.3;
-          const ampLfoG = ctx.createGain();
-          ampLfoG.gain.value = 0.5;
-          ampLfo.connect(ampLfoG);
-          const gate = ctx.createGain();
-          gate.gain.value = 0.3 / (i + 1);
-          ampLfoG.connect(gate.gain);
-          ampLfo.start();
+    source.start();
 
-          osc.connect(gate);
-          gate.connect(srcGain);
-          osc.start();
-          nodes.sources.push(osc, chirpLfo, ampLfo);
-        });
-        break;
-      }
-    }
+    envAudioNodes.push({
+      gain: noiseGain,
+      isVoice: false,
+      baseGain: 1.0,
+      sources: [source]
+    });
+    envAudioNodes.push({
+      gain: voiceGain,
+      isVoice: true,
+      baseGain: 1.0,
+      sources: []
+    });
 
-    envAudioNodes.push(nodes);
-  });
-
-  envIsPlaying = true;
-  updateEnvAudioGains();
+    envIsPlaying = true;
+    updateEnvAudioGains();
+  } catch (err) {
+    console.error('Failed to load env audio:', err);
+  }
 }
 
 function updateEnvAudioGains() {
