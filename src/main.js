@@ -457,6 +457,19 @@ function animateStats() {
   if (statsContainer) observer.observe(statsContainer);
 }
 
+// ===== SCRIPT LOADER =====
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.crossOrigin = 'anonymous';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
 // ===== HAND TRACKING =====
 async function startHandTracking() {
   const overlay = document.getElementById('hand-overlay');
@@ -478,11 +491,11 @@ async function startHandTracking() {
     handCanvas.width = handCanvas.clientWidth;
     handCanvas.height = handCanvas.clientHeight;
 
-    // Load MediaPipe Hands
-    const { Hands } = await import('@mediapipe/hands');
-    const { Camera } = await import('@mediapipe/camera_utils');
+    // Load MediaPipe Hands via CDN
+    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
 
-    const hands = new Hands({
+    const hands = new window.Hands({
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
@@ -542,7 +555,7 @@ async function startHandTracking() {
       }
     });
 
-    const mpCamera = new Camera(video, {
+    const mpCamera = new window.Camera(video, {
       onFrame: async () => {
         await hands.send({ image: video });
       },
