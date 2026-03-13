@@ -519,12 +519,12 @@ function applyNoiseFilter() {
     // WAV-based: modulate noise vs voice gain
     if (noiseNoiseGainNode) {
       noiseNoiseGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 0.05 : 1.0, t + 0.3
+        noiseFilterEnabled ? 0.02 : 1.0, t + 0.3
       );
     }
     if (noiseVoiceGainNode) {
       noiseVoiceGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 2.0 : 1.0, t + 0.3
+        noiseFilterEnabled ? 2.5 : 1.0, t + 0.3
       );
     }
   } else if (noiseDemoMode === 'mic' && noiseBandpassFilter) {
@@ -682,13 +682,13 @@ async function startSimulatedNoise() {
     // === NOISE PATH: lowpass + highpass to isolate non-voice ===
     const noiseLP = ctx.createBiquadFilter();
     noiseLP.type = 'lowpass';
-    noiseLP.frequency.value = 250;
-    noiseLP.Q.value = 0.5;
+    noiseLP.frequency.value = 200;
+    noiseLP.Q.value = 0.7;
 
     const noiseHP = ctx.createBiquadFilter();
     noiseHP.type = 'highpass';
-    noiseHP.frequency.value = 3500;
-    noiseHP.Q.value = 0.5;
+    noiseHP.frequency.value = 4000;
+    noiseHP.Q.value = 0.7;
 
     const noiseGain = ctx.createGain();
     noiseGain.gain.value = 1.0;
@@ -701,11 +701,11 @@ async function startSimulatedNoise() {
     fullSource.connect(noiseHP);
     noiseHP.connect(noiseGain);
 
-    // === VOICE PATH: bandpass to isolate speech ===
+    // === VOICE PATH: wider bandpass to capture more speech ===
     const voiceBP = ctx.createBiquadFilter();
     voiceBP.type = 'bandpass';
-    voiceBP.frequency.value = 1200;
-    voiceBP.Q.value = 0.4;
+    voiceBP.frequency.value = 1000;
+    voiceBP.Q.value = 0.25;
 
     const voiceGain = ctx.createGain();
     voiceGain.gain.value = 1.0;
@@ -1329,11 +1329,13 @@ async function buildEnvAudio(envKey) {
     // === NOISE PATH: frequencies outside voice band ===
     const noiseLP = ctx.createBiquadFilter();
     noiseLP.type = 'lowpass';
-    noiseLP.frequency.value = 250;
+    noiseLP.frequency.value = 200;
+    noiseLP.Q.value = 0.7;
 
     const noiseHP = ctx.createBiquadFilter();
     noiseHP.type = 'highpass';
-    noiseHP.frequency.value = 3500;
+    noiseHP.frequency.value = 4000;
+    noiseHP.Q.value = 0.7;
 
     const noiseGain = ctx.createGain();
     noiseGain.gain.value = 1.0;
@@ -1343,11 +1345,11 @@ async function buildEnvAudio(envKey) {
     source.connect(noiseHP);
     noiseHP.connect(noiseGain);
 
-    // === VOICE PATH: speech band ===
+    // === VOICE PATH: wider speech band ===
     const voiceBP = ctx.createBiquadFilter();
     voiceBP.type = 'bandpass';
-    voiceBP.frequency.value = 1200;
-    voiceBP.Q.value = 0.4;
+    voiceBP.frequency.value = 1000;
+    voiceBP.Q.value = 0.25;
 
     const voiceGain = ctx.createGain();
     voiceGain.gain.value = 1.0;
@@ -1391,9 +1393,9 @@ function updateEnvAudioGains() {
     let targetGain = nodes.baseGain;
     if (envHAEnabled) {
       if (nodes.isVoice) {
-        targetGain = Math.min(0.12, nodes.baseGain * 1.8); // Boost voice
+        targetGain = nodes.baseGain * 2.5; // Boost voice significantly
       } else {
-        targetGain = nodes.baseGain * 0.08; // Suppress noise heavily
+        targetGain = nodes.baseGain * 0.03; // Suppress noise heavily
       }
     }
     nodes.gain.gain.linearRampToValueAtTime(targetGain, envAudioCtx.currentTime + 0.3);
@@ -1429,6 +1431,13 @@ function setupEnvironmentSim() {
       document.querySelectorAll('.env-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentEnv = btn.dataset.env;
+      // Reset hearing aid toggle to OFF
+      envHAEnabled = false;
+      const haToggle = document.getElementById('env-ha-toggle');
+      if (haToggle) {
+        haToggle.classList.remove('active');
+        haToggle.querySelector('.toggle-text').textContent = '보청기 OFF';
+      }
       // Restart audio for new environment
       if (envIsPlaying) {
         buildEnvAudio(currentEnv);
