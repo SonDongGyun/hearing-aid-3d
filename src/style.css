@@ -854,6 +854,22 @@ body {
   right: 16px;
 }
 
+.env-play-toggle {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.env-play-toggle .btn-primary {
+  padding: 10px 24px;
+  font-size: 0.85rem;
+}
+
+.env-play-toggle .btn-primary.playing {
+  background: linear-gradient(135deg, #ff4444, #ff8800);
+}
+
 .env-controls h3 {
   font-size: 1.3rem;
   font-weight: 700;

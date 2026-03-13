@@ -696,8 +696,10 @@ function setupHearingTest() {
       btn.classList.add('playing');
       btn.textContent = '■';
 
-      // Record in profile
-      hearingProfile[freq] = volume;
+      // Record in profile: slider value = minimum audible volume
+      // Higher slider = need louder sound = worse hearing at this freq
+      // We store "hearing ability": 1 = perfect (hears at 0%), 0 = deaf (needs 100%)
+      hearingProfile[freq] = 1 - volume;
       updateHearingChart();
       updateHearingResult();
     });
@@ -708,7 +710,8 @@ function setupHearingTest() {
     slider.addEventListener('input', () => {
       const freq = parseInt(slider.dataset.freq);
       const volume = parseInt(slider.value) / 100;
-      hearingProfile[freq] = volume;
+      // Store hearing ability (inverted: low slider = good hearing)
+      hearingProfile[freq] = 1 - volume;
 
       if (activeOscillator && activeOscillator._freq === freq) {
         activeOscillator._gain.gain.setValueAtTime(volume * 0.3, hearingAudioCtx.currentTime);
@@ -815,7 +818,7 @@ function updateHearingChart() {
   ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {
     const y = pad.top + (chartH / 4) * i;
-    const label = ['큼', '', '보통', '', '작음'][i];
+    const label = ['좋음', '', '보통', '', '약함'][i];
     ctx.fillText(label, pad.left - 10, y + 4);
   }
 
@@ -930,33 +933,40 @@ function updateHearingResult() {
     return;
   }
 
+  // hearingProfile[freq] = hearing ability (0~1, higher = better hearing)
+  // A low value means the user needed a high volume to hear → weak hearing
   const weakFreqs = tested.filter(f => hearingProfile[f] < 0.4);
-  const avgLevel = tested.reduce((s, f) => s + hearingProfile[f], 0) / tested.length;
+  const avgAbility = tested.reduce((s, f) => s + hearingProfile[f], 0) / tested.length;
 
   let msg = '';
-  if (avgLevel > 0.6) {
-    msg = `<strong style="color:#00c8ff;">양호한 청력</strong><br>전반적으로 양호한 수준입니다.`;
-  } else if (avgLevel > 0.35) {
-    msg = `<strong style="color:#ffcc00;">경도 난청 가능성</strong><br>일부 주파수에서 청력이 약합니다. 전문 상담을 권장합니다.`;
+  if (avgAbility > 0.7) {
+    msg = `<strong style="color:#00c8ff;">양호한 청력</strong><br>대부분의 주파수를 작은 소리에서도 잘 들을 수 있습니다.`;
+  } else if (avgAbility > 0.4) {
+    msg = `<strong style="color:#ffcc00;">경도 난청 가능성</strong><br>일부 주파수에서 볼륨을 높여야 들리는 경향이 있습니다. 전문 상담을 권장합니다.`;
   } else {
-    msg = `<strong style="color:#ff6644;">청력 저하 감지</strong><br>여러 주파수에서 청력이 약한 편입니다. 보청기 착용 시 큰 개선이 예상됩니다.`;
+    msg = `<strong style="color:#ff6644;">청력 보강 권장</strong><br>여러 주파수에서 높은 볼륨이 필요합니다. 보청기 착용 시 큰 개선이 예상됩니다.`;
   }
 
   if (weakFreqs.length > 0) {
     const names = weakFreqs.map(f => f >= 1000 ? `${f / 1000}kHz` : `${f}Hz`);
-    msg += `<br><br>약한 주파수: ${names.join(', ')}`;
-    msg += `<br><span style="color:#7b61ff;">→ SoundClear가 이 대역을 자동으로 보강합니다.</span>`;
+    msg += `<br><br>보강이 필요한 주파수: ${names.join(', ')}`;
+    msg += `<br><span style="color:#7b61ff;">→ SoundClear가 이 대역을 자동으로 증폭하여 선명하게 전달합니다.</span>`;
   }
+
+  msg += `<br><br><span style="color:var(--text-dim); font-size:0.8rem;">※ 이 테스트는 참고용이며 의료 진단을 대체하지 않습니다.</span>`;
 
   resultEl.innerHTML = `<p>${msg}</p>`;
 }
 
 // ======================================================
-// 3. ENVIRONMENT SIMULATION
+// 3. ENVIRONMENT SIMULATION (with Audio Synthesis)
 // ======================================================
 let envCanvas, envCtx, envAnimFrame;
 let currentEnv = 'cafe';
 let envHAEnabled = false;
+let envAudioCtx = null;
+let envAudioNodes = []; // active audio nodes for current environment
+let envIsPlaying = false;
 
 const ENV_CONFIG = {
   cafe: {
@@ -969,7 +979,18 @@ const ENV_CONFIG = {
     ],
     noiseLevel: 0.65,
     voiceLevel: 0.5,
-    color: '#ff8844'
+    color: '#ff8844',
+    // Audio synthesis definitions
+    audio: [
+      // Background music: warm low-mid tones
+      { synthType: 'music', freqs: [220, 330, 440], gain: 0.04, isVoice: false },
+      // Dishes/cups: high frequency bursts
+      { synthType: 'clatter', freq: 3500, gain: 0.02, isVoice: false },
+      // Other table chatter: filtered noise in speech band
+      { synthType: 'chatter', freqLow: 200, freqHigh: 2000, gain: 0.05, isVoice: false },
+      // Companion voice: clear speech-range tones
+      { synthType: 'voice', freqs: [300, 600, 1200, 2400], gain: 0.06, isVoice: true },
+    ]
   },
   street: {
     label: '길거리',
@@ -981,7 +1002,17 @@ const ENV_CONFIG = {
     ],
     noiseLevel: 0.8,
     voiceLevel: 0.35,
-    color: '#ff4444'
+    color: '#ff4444',
+    audio: [
+      // Traffic: low rumble
+      { synthType: 'rumble', freqLow: 50, freqHigh: 300, gain: 0.07, isVoice: false },
+      // Honking: harsh mid-high
+      { synthType: 'honk', freq: 600, gain: 0.03, isVoice: false },
+      // Wind: broadband whoosh
+      { synthType: 'wind', freqLow: 100, freqHigh: 1500, gain: 0.03, isVoice: false },
+      // Companion voice
+      { synthType: 'voice', freqs: [280, 560, 1100, 2200], gain: 0.05, isVoice: true },
+    ]
   },
   conversation: {
     label: '대화',
@@ -992,7 +1023,15 @@ const ENV_CONFIG = {
     ],
     noiseLevel: 0.2,
     voiceLevel: 0.7,
-    color: '#ffcc00'
+    color: '#ffcc00',
+    audio: [
+      // AC hum
+      { synthType: 'hum', freq: 120, gain: 0.02, isVoice: false },
+      // Voice 1 (lower, male-like)
+      { synthType: 'voice', freqs: [180, 360, 720, 1800], gain: 0.06, isVoice: true },
+      // Voice 2 (higher, female-like)
+      { synthType: 'voice', freqs: [320, 640, 1280, 2800], gain: 0.05, isVoice: true },
+    ]
   },
   nature: {
     label: '자연',
@@ -1004,9 +1043,268 @@ const ENV_CONFIG = {
     ],
     noiseLevel: 0.3,
     voiceLevel: 0.55,
-    color: '#44cc66'
+    color: '#44cc66',
+    audio: [
+      // Birds: high pitched chirps
+      { synthType: 'birds', freqs: [2800, 3500, 4200], gain: 0.02, isVoice: false },
+      // Wind: low broadband
+      { synthType: 'wind', freqLow: 80, freqHigh: 800, gain: 0.025, isVoice: false },
+      // Water stream
+      { synthType: 'water', freqLow: 500, freqHigh: 4000, gain: 0.02, isVoice: false },
+      // Companion voice
+      { synthType: 'voice', freqs: [260, 520, 1040, 2600], gain: 0.05, isVoice: true },
+    ]
   }
 };
+
+// --- Audio Synthesis Engine ---
+function createWhiteNoise(ctx, duration) {
+  const sampleRate = ctx.sampleRate;
+  const length = sampleRate * duration;
+  const buffer = ctx.createBuffer(1, length, sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  return buffer;
+}
+
+function buildEnvAudio(envKey) {
+  stopEnvAudio();
+
+  if (!envAudioCtx) {
+    envAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  const ctx = envAudioCtx;
+  const env = ENV_CONFIG[envKey];
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.8;
+  masterGain.connect(ctx.destination);
+
+  const noiseBuffer = createWhiteNoise(ctx, 4);
+
+  env.audio.forEach(src => {
+    const nodes = {};
+    // Per-source gain node (this is what we modulate for HA effect)
+    const srcGain = ctx.createGain();
+    srcGain.gain.value = src.gain;
+    srcGain.connect(masterGain);
+    nodes.gain = srcGain;
+    nodes.isVoice = src.isVoice;
+    nodes.baseGain = src.gain;
+    nodes.sources = [];
+
+    switch (src.synthType) {
+      case 'voice': {
+        // Simulate speech: multiple harmonics with vibrato
+        src.freqs.forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          osc.type = i === 0 ? 'sawtooth' : 'sine';
+          // Add natural vibrato
+          const vibrato = ctx.createOscillator();
+          const vibratoGain = ctx.createGain();
+          vibrato.frequency.value = 4 + Math.random() * 2; // 4-6 Hz vibrato
+          vibratoGain.gain.value = f * 0.02; // subtle pitch variation
+          vibrato.connect(vibratoGain);
+          vibratoGain.connect(osc.frequency);
+          vibrato.start();
+
+          osc.frequency.value = f;
+          // Amplitude modulation for natural speech rhythm
+          const ampMod = ctx.createOscillator();
+          const ampModGain = ctx.createGain();
+          ampMod.frequency.value = 2 + Math.random() * 2; // syllable rate
+          ampModGain.gain.value = 0.4;
+          ampMod.connect(ampModGain);
+
+          const ampGain = ctx.createGain();
+          ampGain.gain.value = i === 0 ? 0.5 : 0.3 / (i + 1);
+          ampModGain.connect(ampGain.gain);
+          ampMod.start();
+
+          osc.connect(ampGain);
+          ampGain.connect(srcGain);
+          osc.start();
+
+          nodes.sources.push(osc, vibrato, ampMod);
+        });
+        break;
+      }
+      case 'music': {
+        src.freqs.forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = f;
+          const g = ctx.createGain();
+          g.gain.value = 0.3 / (i + 1);
+          // Slow tremolo
+          const trem = ctx.createOscillator();
+          const tremG = ctx.createGain();
+          trem.frequency.value = 0.3 + i * 0.1;
+          tremG.gain.value = 0.15;
+          trem.connect(tremG);
+          tremG.connect(g.gain);
+          trem.start();
+
+          osc.connect(g);
+          g.connect(srcGain);
+          osc.start();
+          nodes.sources.push(osc, trem);
+        });
+        break;
+      }
+      case 'chatter':
+      case 'rumble':
+      case 'wind':
+      case 'water': {
+        // Filtered noise
+        const noiseSrc = ctx.createBufferSource();
+        noiseSrc.buffer = noiseBuffer;
+        noiseSrc.loop = true;
+
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = (src.freqLow + src.freqHigh) / 2;
+        bp.Q.value = bp.frequency.value / (src.freqHigh - src.freqLow);
+
+        noiseSrc.connect(bp);
+        bp.connect(srcGain);
+        noiseSrc.start();
+        nodes.sources.push(noiseSrc);
+        break;
+      }
+      case 'clatter': {
+        // Periodic high-frequency clicks
+        const noiseSrc = ctx.createBufferSource();
+        noiseSrc.buffer = noiseBuffer;
+        noiseSrc.loop = true;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = src.freq;
+        hp.Q.value = 2;
+        // Gate it with a slow square-ish LFO for intermittent clatter
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 1.5;
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.5;
+        lfo.connect(lfoGain);
+        const gateGain = ctx.createGain();
+        gateGain.gain.value = 0.5;
+        lfoGain.connect(gateGain.gain);
+        lfo.start();
+
+        noiseSrc.connect(hp);
+        hp.connect(gateGain);
+        gateGain.connect(srcGain);
+        noiseSrc.start();
+        nodes.sources.push(noiseSrc, lfo);
+        break;
+      }
+      case 'honk': {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.value = src.freq;
+        // Intermittent honking
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 0.4;
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.5;
+        lfo.connect(lfoGain);
+        const gate = ctx.createGain();
+        gate.gain.value = 0.5;
+        lfoGain.connect(gate.gain);
+        lfo.start();
+
+        osc.connect(gate);
+        gate.connect(srcGain);
+        osc.start();
+        nodes.sources.push(osc, lfo);
+        break;
+      }
+      case 'hum': {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = src.freq;
+        osc.connect(srcGain);
+        osc.start();
+        // Add harmonic
+        const osc2 = ctx.createOscillator();
+        osc2.type = 'sine';
+        osc2.frequency.value = src.freq * 2;
+        const g2 = ctx.createGain();
+        g2.gain.value = 0.3;
+        osc2.connect(g2);
+        g2.connect(srcGain);
+        osc2.start();
+        nodes.sources.push(osc, osc2);
+        break;
+      }
+      case 'birds': {
+        // Chirping with frequency sweeps
+        src.freqs.forEach((f, i) => {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = f;
+          // Chirp modulation
+          const chirpLfo = ctx.createOscillator();
+          chirpLfo.frequency.value = 6 + i * 3;
+          const chirpGain = ctx.createGain();
+          chirpGain.gain.value = f * 0.15;
+          chirpLfo.connect(chirpGain);
+          chirpGain.connect(osc.frequency);
+          chirpLfo.start();
+          // Amplitude gate for intermittent chirps
+          const ampLfo = ctx.createOscillator();
+          ampLfo.frequency.value = 0.5 + i * 0.3;
+          const ampLfoG = ctx.createGain();
+          ampLfoG.gain.value = 0.5;
+          ampLfo.connect(ampLfoG);
+          const gate = ctx.createGain();
+          gate.gain.value = 0.3 / (i + 1);
+          ampLfoG.connect(gate.gain);
+          ampLfo.start();
+
+          osc.connect(gate);
+          gate.connect(srcGain);
+          osc.start();
+          nodes.sources.push(osc, chirpLfo, ampLfo);
+        });
+        break;
+      }
+    }
+
+    envAudioNodes.push(nodes);
+  });
+
+  envIsPlaying = true;
+  updateEnvAudioGains();
+}
+
+function updateEnvAudioGains() {
+  if (!envAudioCtx || !envIsPlaying) return;
+  envAudioNodes.forEach(nodes => {
+    let targetGain = nodes.baseGain;
+    if (envHAEnabled) {
+      if (nodes.isVoice) {
+        targetGain = Math.min(0.12, nodes.baseGain * 1.8); // Boost voice
+      } else {
+        targetGain = nodes.baseGain * 0.08; // Suppress noise heavily
+      }
+    }
+    nodes.gain.gain.linearRampToValueAtTime(targetGain, envAudioCtx.currentTime + 0.3);
+  });
+}
+
+function stopEnvAudio() {
+  envAudioNodes.forEach(nodes => {
+    nodes.sources.forEach(src => {
+      try { src.stop(); } catch (e) {}
+    });
+    try { nodes.gain.disconnect(); } catch (e) {}
+  });
+  envAudioNodes = [];
+  envIsPlaying = false;
+}
 
 function setupEnvironmentSim() {
   envCanvas = document.getElementById('env-canvas');
@@ -1020,6 +1318,10 @@ function setupEnvironmentSim() {
       document.querySelectorAll('.env-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentEnv = btn.dataset.env;
+      // Restart audio for new environment
+      if (envIsPlaying) {
+        buildEnvAudio(currentEnv);
+      }
     });
   });
 
@@ -1029,6 +1331,21 @@ function setupEnvironmentSim() {
     envHAEnabled = !envHAEnabled;
     toggle.classList.toggle('active', envHAEnabled);
     toggle.querySelector('.toggle-text').textContent = envHAEnabled ? '보청기 ON' : '보청기 OFF';
+    updateEnvAudioGains();
+  });
+
+  // Play/stop audio button
+  const playBtn = document.getElementById('env-play-btn');
+  playBtn.addEventListener('click', () => {
+    if (envIsPlaying) {
+      stopEnvAudio();
+      playBtn.innerHTML = '<span>🔊</span> 소리 재생';
+      playBtn.classList.remove('playing');
+    } else {
+      buildEnvAudio(currentEnv);
+      playBtn.innerHTML = '<span>⏹</span> 소리 정지';
+      playBtn.classList.add('playing');
+    }
   });
 
   drawEnvironmentSim();
@@ -1056,7 +1373,7 @@ function drawEnvironmentSim() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#050508';
-  ctx.fillText('👂', centerX, centerY);
+  ctx.fillText('\u{1F442}', centerX, centerY);
   ctx.textBaseline = 'alphabetic';
 
   // Draw sound sources around the listener
@@ -1069,13 +1386,11 @@ function drawEnvironmentSim() {
     const isVoice = src.type === 'voice';
     const baseColor = isVoice ? '0,200,255' : '255,68,68';
 
-    // Calculate effective amplitude
     let effectiveAmp = src.amp;
     if (src.burst) {
       effectiveAmp *= 0.5 + Math.abs(Math.sin(time * 2 + i)) * 0.5;
     }
 
-    // With hearing aid: suppress noise, boost voice
     let displayAmp = effectiveAmp;
     if (envHAEnabled) {
       if (isVoice) {
@@ -1085,12 +1400,11 @@ function drawEnvironmentSim() {
       }
     }
 
-    // Expanding rings from source
+    // Expanding rings
     for (let r = 0; r < 3; r++) {
       const ringPhase = (time * src.freq + r * 0.8) % 3;
       const ringRadius = 15 + ringPhase * 30 * displayAmp;
       const ringOpacity = (1 - ringPhase / 3) * displayAmp * 0.6;
-
       ctx.beginPath();
       ctx.arc(sx, sy, ringRadius, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(${baseColor}, ${ringOpacity})`;
@@ -1126,7 +1440,7 @@ function drawEnvironmentSim() {
     ctx.fillRect(sx - barW / 2, labelY + 6, barW * displayAmp, barH);
   });
 
-  // Overall clarity indicator
+  // Clarity indicator
   const clarity = envHAEnabled
     ? Math.min(100, Math.floor((env.voiceLevel * 1.5 / (env.voiceLevel * 1.5 + env.noiseLevel * 0.15)) * 100))
     : Math.floor((env.voiceLevel / (env.voiceLevel + env.noiseLevel)) * 100);
@@ -1134,9 +1448,8 @@ function drawEnvironmentSim() {
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.font = `bold ${isMobile ? 11 : 14}px "Noto Sans KR", sans-serif`;
   ctx.textAlign = 'center';
-  ctx.fillText(`음성 명료도: ${clarity}%`, centerX, h - 20);
+  ctx.fillText(`\u{1F50A} \uC74C\uC131 \uBA85\uB8CC\uB3C4: ${clarity}%`, centerX, h - 20);
 
-  // Clarity bar
   const cBarW = 120;
   ctx.fillStyle = 'rgba(255,255,255,0.1)';
   ctx.fillRect(centerX - cBarW / 2, h - 14, cBarW, 6);
@@ -1148,7 +1461,15 @@ function drawEnvironmentSim() {
   ctx.fillStyle = env.color;
   ctx.font = `bold ${isMobile ? 12 : 16}px "Noto Sans KR", sans-serif`;
   ctx.textAlign = 'left';
-  ctx.fillText(`🔊 ${env.label}`, 16, 28);
+  ctx.fillText(`\u{1F50A} ${env.label}`, 16, 28);
+
+  // Play status
+  if (!envIsPlaying) {
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = `${isMobile ? 10 : 13}px "Noto Sans KR", sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.fillText('\u{1F50A} \uC18C\uB9AC \uC7AC\uC0DD \uBC84\uD2BC\uC744 \uB20C\uB7EC\uBCF4\uC138\uC694', w - 16, 28);
+  }
 
   envAnimFrame = requestAnimationFrame(drawEnvironmentSim);
 }
