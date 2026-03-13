@@ -11,6 +11,39 @@ const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/
   || (window.innerWidth <= 768);
 const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
+// ===== MOBILE AUDIO UNLOCK =====
+// iOS/Android require AudioContext to be created & unlocked during a user gesture.
+// We create a shared context and unlock it on first touch/click.
+let sharedAudioCtx = null;
+let audioUnlocked = false;
+
+function getSharedAudioCtx() {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return sharedAudioCtx;
+}
+
+function unlockAudio() {
+  if (audioUnlocked) return;
+  const ctx = getSharedAudioCtx();
+  if (ctx.state === 'suspended') {
+    ctx.resume();
+  }
+  // Play a silent buffer to fully unlock on iOS
+  const buf = ctx.createBuffer(1, 1, 22050);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.start(0);
+  audioUnlocked = true;
+}
+
+// Unlock audio on first user interaction
+['touchstart', 'touchend', 'click', 'keydown'].forEach(evt => {
+  document.addEventListener(evt, unlockAudio, { once: false, passive: true });
+});
+
 // ===== INIT =====
 function init() {
   // Scene
@@ -563,11 +596,8 @@ function stopNoiseCancellation() {
   noiseVoiceGainNode = null;
   noiseBandpassFilter = null;
 
-  // Close audio context
-  if (noiseAudioCtx) {
-    try { noiseAudioCtx.close(); } catch (e) {}
-    noiseAudioCtx = null;
-  }
+  // Don't close shared audio context, just release reference
+  noiseAudioCtx = null;
 
   noiseDemoMode = 'none';
 
@@ -627,7 +657,7 @@ async function startNoiseMic() {
   document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'mic';
 
-  noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  noiseAudioCtx = getSharedAudioCtx();
   if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
   const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
 
@@ -662,8 +692,7 @@ async function startSimulatedNoise() {
   document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'simulated';
 
-  noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // iOS/Android require resume after user gesture
+  noiseAudioCtx = getSharedAudioCtx();
   if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
   const ctx = noiseAudioCtx;
 
@@ -964,7 +993,7 @@ function playTone(freq, volume) {
   stopTone();
 
   if (!hearingAudioCtx) {
-    hearingAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    hearingAudioCtx = getSharedAudioCtx();
   }
   if (hearingAudioCtx.state === 'suspended') hearingAudioCtx.resume();
 
@@ -1303,7 +1332,7 @@ async function loadEnvAudioBuffer(envKey) {
   const response = await fetch(`/audio/${envKey}.wav`);
   const arrayBuffer = await response.arrayBuffer();
   if (!envAudioCtx) {
-    envAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    envAudioCtx = getSharedAudioCtx();
   }
   envAudioBuffers[envKey] = await envAudioCtx.decodeAudioData(arrayBuffer);
   return envAudioBuffers[envKey];
@@ -1313,7 +1342,7 @@ async function buildEnvAudio(envKey) {
   stopEnvAudio();
 
   if (!envAudioCtx) {
-    envAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    envAudioCtx = getSharedAudioCtx();
   }
   if (envAudioCtx.state === 'suspended') await envAudioCtx.resume();
   const ctx = envAudioCtx;
