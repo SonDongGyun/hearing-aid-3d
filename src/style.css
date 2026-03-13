@@ -595,6 +595,29 @@ body {
   pointer-events: none;
 }
 
+.noise-stop-wrap {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.btn-stop {
+  background: rgba(255,68,68,0.15);
+  border: 1px solid rgba(255,68,68,0.4);
+  color: #ff6666;
+  padding: 8px 24px;
+  border-radius: 50px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.btn-stop:hover {
+  background: rgba(255,68,68,0.3);
+}
+
 .noise-controls {
   display: flex;
   flex-direction: column;

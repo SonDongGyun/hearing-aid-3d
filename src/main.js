@@ -487,37 +487,130 @@ function setupExperienceTabs() {
 let noiseAudioCtx, noiseAnalyser, noiseDataArray, noiseMicStream;
 let noiseFilterEnabled = false;
 let noiseAnimFrame;
+let noiseDemoMode = 'none'; // 'none', 'mic', 'simulated'
+let noiseSimNodes = []; // track all audio nodes for cleanup
+let noiseNoiseGainNode = null; // gain for noise sources (to modulate on filter toggle)
+let noiseVoiceGainNode = null; // gain for voice sources
+let noiseBandpassFilter = null; // for mic mode
 
 function setupNoiseCancellation() {
   const startBtn = document.getElementById('start-mic');
   const startSimBtn = document.getElementById('start-sim');
   const toggle = document.getElementById('noise-toggle');
+  const stopBtn = document.getElementById('stop-noise');
 
   startBtn.addEventListener('click', startNoiseMic);
   startSimBtn.addEventListener('click', startSimulatedNoise);
+  stopBtn.addEventListener('click', stopNoiseCancellation);
+
   toggle.addEventListener('click', () => {
     noiseFilterEnabled = !noiseFilterEnabled;
     toggle.classList.toggle('active', noiseFilterEnabled);
     toggle.querySelector('.toggle-text').textContent = noiseFilterEnabled ? 'ON' : 'OFF';
+    applyNoiseFilter();
   });
 }
 
-let noiseDemoMode = 'mic'; // 'mic' or 'simulated'
+function applyNoiseFilter() {
+  if (!noiseAudioCtx) return;
+  const t = noiseAudioCtx.currentTime;
+
+  if (noiseDemoMode === 'simulated') {
+    // Simulated: directly change gain of noise vs voice
+    if (noiseNoiseGainNode) {
+      noiseNoiseGainNode.gain.linearRampToValueAtTime(
+        noiseFilterEnabled ? 0.003 : 0.06, t + 0.3
+      );
+    }
+    if (noiseVoiceGainNode) {
+      noiseVoiceGainNode.gain.linearRampToValueAtTime(
+        noiseFilterEnabled ? 0.12 : 0.04, t + 0.3
+      );
+    }
+  } else if (noiseDemoMode === 'mic' && noiseBandpassFilter) {
+    // Mic mode: toggle bandpass filter
+    if (noiseFilterEnabled) {
+      noiseBandpassFilter.frequency.linearRampToValueAtTime(1500, t + 0.2);
+      noiseBandpassFilter.Q.linearRampToValueAtTime(0.5, t + 0.2);
+    } else {
+      // Wide open = essentially no filter
+      noiseBandpassFilter.frequency.linearRampToValueAtTime(5000, t + 0.2);
+      noiseBandpassFilter.Q.linearRampToValueAtTime(0.01, t + 0.2);
+    }
+  }
+}
+
+function stopNoiseCancellation() {
+  // Stop animation
+  if (noiseAnimFrame) {
+    cancelAnimationFrame(noiseAnimFrame);
+    noiseAnimFrame = null;
+  }
+
+  // Stop mic stream
+  if (noiseMicStream) {
+    noiseMicStream.getTracks().forEach(t => t.stop());
+    noiseMicStream = null;
+  }
+
+  // Stop all sim audio nodes
+  noiseSimNodes.forEach(node => {
+    try { node.stop(); } catch (e) {}
+    try { node.disconnect(); } catch (e) {}
+  });
+  noiseSimNodes = [];
+  noiseNoiseGainNode = null;
+  noiseVoiceGainNode = null;
+  noiseBandpassFilter = null;
+
+  // Close audio context
+  if (noiseAudioCtx) {
+    try { noiseAudioCtx.close(); } catch (e) {}
+    noiseAudioCtx = null;
+  }
+
+  noiseDemoMode = 'none';
+
+  // Reset UI
+  const overlay = document.getElementById('noise-overlay');
+  overlay.classList.remove('hidden');
+  document.getElementById('noise-stop-wrap').style.display = 'none';
+
+  // Reset toggle
+  noiseFilterEnabled = false;
+  const toggle = document.getElementById('noise-toggle');
+  toggle.classList.remove('active');
+  toggle.querySelector('.toggle-text').textContent = 'OFF';
+
+  // Clear canvas
+  const canvas = document.getElementById('noise-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
 
 async function startNoiseMic() {
   const overlay = document.getElementById('noise-overlay');
   try {
     noiseMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     overlay.classList.add('hidden');
+    document.getElementById('noise-stop-wrap').style.display = 'block';
     noiseDemoMode = 'mic';
 
     noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
 
+    // Bandpass filter for AI noise cancellation effect
+    noiseBandpassFilter = noiseAudioCtx.createBiquadFilter();
+    noiseBandpassFilter.type = 'bandpass';
+    noiseBandpassFilter.frequency.value = 5000; // wide = no filter initially
+    noiseBandpassFilter.Q.value = 0.01;
+
     noiseAnalyser = noiseAudioCtx.createAnalyser();
     noiseAnalyser.fftSize = 2048;
     noiseAnalyser.smoothingTimeConstant = 0.8;
-    source.connect(noiseAnalyser);
+
+    source.connect(noiseBandpassFilter);
+    noiseBandpassFilter.connect(noiseAnalyser);
 
     noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
 
@@ -527,7 +620,6 @@ async function startNoiseMic() {
 
     drawNoiseVisualization(canvas);
   } catch (err) {
-    // Fallback: start simulated demo instead
     startSimulatedNoise();
   }
 }
@@ -535,70 +627,110 @@ async function startNoiseMic() {
 function startSimulatedNoise() {
   const overlay = document.getElementById('noise-overlay');
   overlay.classList.add('hidden');
+  document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'simulated';
 
   noiseAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const ctx = noiseAudioCtx;
 
-  // Create simulated ambient sound (noise + voice tones)
-  const bufferSize = noiseAudioCtx.sampleRate * 2;
-  const noiseBuffer = noiseAudioCtx.createBuffer(1, bufferSize, noiseAudioCtx.sampleRate);
-  const data = noiseBuffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+  // === NOISE SOURCES ===
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.value = 0.06;
+  noiseNoiseGainNode = noiseGain;
 
-  const noiseSrc = noiseAudioCtx.createBufferSource();
+  // White noise (general ambient)
+  const bufferSize = ctx.sampleRate * 2;
+  const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const bufData = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) bufData[i] = Math.random() * 2 - 1;
+
+  const noiseSrc = ctx.createBufferSource();
   noiseSrc.buffer = noiseBuffer;
   noiseSrc.loop = true;
+  noiseSrc.connect(noiseGain);
+  noiseSrc.start();
+  noiseSimNodes.push(noiseSrc);
 
-  // Voice harmonics
-  const voiceOsc1 = noiseAudioCtx.createOscillator();
-  voiceOsc1.frequency.value = 400;
-  voiceOsc1.type = 'sawtooth';
-  const voiceOsc2 = noiseAudioCtx.createOscillator();
-  voiceOsc2.frequency.value = 800;
-  const voiceOsc3 = noiseAudioCtx.createOscillator();
-  voiceOsc3.frequency.value = 1600;
+  // Low rumble
+  const rumbleOsc = ctx.createOscillator();
+  rumbleOsc.type = 'sine';
+  rumbleOsc.frequency.value = 80;
+  const rumbleG = ctx.createGain();
+  rumbleG.gain.value = 0.5;
+  rumbleOsc.connect(rumbleG);
+  rumbleG.connect(noiseGain);
+  rumbleOsc.start();
+  noiseSimNodes.push(rumbleOsc);
 
-  // Speech rhythm modulation
-  const modOsc = noiseAudioCtx.createOscillator();
-  modOsc.frequency.value = 3;
-  const modGain = noiseAudioCtx.createGain();
-  modGain.gain.value = 0.4;
-  modOsc.connect(modGain);
+  // Mid noise (chatter-like)
+  const chatterSrc = ctx.createBufferSource();
+  chatterSrc.buffer = noiseBuffer;
+  chatterSrc.loop = true;
+  const chatterBP = ctx.createBiquadFilter();
+  chatterBP.type = 'bandpass';
+  chatterBP.frequency.value = 1000;
+  chatterBP.Q.value = 0.8;
+  const chatterG = ctx.createGain();
+  chatterG.gain.value = 0.7;
+  chatterSrc.connect(chatterBP);
+  chatterBP.connect(chatterG);
+  chatterG.connect(noiseGain);
+  chatterSrc.start();
+  noiseSimNodes.push(chatterSrc);
 
-  const voiceGain = noiseAudioCtx.createGain();
-  voiceGain.gain.value = 0.03;
-  modGain.connect(voiceGain.gain);
+  // === VOICE SOURCES ===
+  const voiceGain = ctx.createGain();
+  voiceGain.gain.value = 0.04;
+  noiseVoiceGainNode = voiceGain;
 
-  const noiseGain = noiseAudioCtx.createGain();
-  noiseGain.gain.value = 0.04;
+  // Speech harmonics with natural modulation
+  const voiceFreqs = [300, 600, 1200, 2400];
+  voiceFreqs.forEach((f, i) => {
+    const osc = ctx.createOscillator();
+    osc.type = i === 0 ? 'sawtooth' : 'sine';
+    osc.frequency.value = f;
 
-  // Mix into analyser
-  noiseAnalyser = noiseAudioCtx.createAnalyser();
+    // Vibrato
+    const vib = ctx.createOscillator();
+    vib.frequency.value = 4.5 + Math.random() * 2;
+    const vibG = ctx.createGain();
+    vibG.gain.value = f * 0.015;
+    vib.connect(vibG);
+    vibG.connect(osc.frequency);
+    vib.start();
+    noiseSimNodes.push(vib);
+
+    // Syllable amplitude modulation
+    const ampMod = ctx.createOscillator();
+    ampMod.frequency.value = 2.5 + Math.random();
+    const ampModG = ctx.createGain();
+    ampModG.gain.value = 0.5;
+    ampMod.connect(ampModG);
+    ampMod.start();
+    noiseSimNodes.push(ampMod);
+
+    const oscGain = ctx.createGain();
+    oscGain.gain.value = i === 0 ? 0.6 : 0.3 / (i + 1);
+    ampModG.connect(oscGain.gain);
+
+    osc.connect(oscGain);
+    oscGain.connect(voiceGain);
+    osc.start();
+    noiseSimNodes.push(osc);
+  });
+
+  // === MIX & OUTPUT ===
+  noiseAnalyser = ctx.createAnalyser();
   noiseAnalyser.fftSize = 2048;
   noiseAnalyser.smoothingTimeConstant = 0.8;
 
-  noiseSrc.connect(noiseGain);
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.6;
+
   noiseGain.connect(noiseAnalyser);
-
-  [voiceOsc1, voiceOsc2, voiceOsc3].forEach(osc => {
-    const g = noiseAudioCtx.createGain();
-    g.gain.value = 0.015;
-    osc.connect(g);
-    g.connect(voiceGain);
-  });
   voiceGain.connect(noiseAnalyser);
-
-  // Connect to output so user can hear
-  const masterGain = noiseAudioCtx.createGain();
-  masterGain.gain.value = 0.5;
   noiseAnalyser.connect(masterGain);
-  masterGain.connect(noiseAudioCtx.destination);
-
-  noiseSrc.start();
-  voiceOsc1.start();
-  voiceOsc2.start();
-  voiceOsc3.start();
-  modOsc.start();
+  masterGain.connect(ctx.destination);
 
   noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
 
@@ -606,6 +738,8 @@ function startSimulatedNoise() {
   canvas.width = canvas.clientWidth * (isMobile ? 1 : 2);
   canvas.height = canvas.clientHeight * (isMobile ? 1 : 2);
 
+  // Apply current filter state
+  applyNoiseFilter();
   drawNoiseVisualization(canvas);
 }
 
