@@ -2098,7 +2098,7 @@ function drawEnvironmentSim() {
 }
 
 // ======================================================
-// 4. VIRTUAL FITTING
+// 4. VIRTUAL FITTING (AR with Face Tracking)
 // ======================================================
 let fittingStream = null;
 let fittingVideo = null;
@@ -2109,12 +2109,36 @@ let fittingFacingMode = 'user';
 let fittingColor = 'silver';
 let fittingEar = 'right';
 let fittingPosX = 0, fittingPosY = 0, fittingScale = 1;
+let faceMesh = null;
+let fittingCameraUtil = null;
+let lastFaceLandmarks = null;
+let faceDetected = false;
+let fittingActive = false;
 
 const FITTING_COLORS = {
-  silver: { body: '#d0d5e0', hook: '#c8cdd8', ring: '#00c8ff' },
-  black: { body: '#2a2a2e', hook: '#222226', ring: '#00c8ff' },
-  beige: { body: '#d4c5a9', hook: '#c4b599', ring: '#00c8ff' },
-  rose: { body: '#e8b4b4', hook: '#d89999', ring: '#ffaacc' }
+  silver: { body: '#d0d5e0', hook: '#c8cdd8', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.15)' },
+  black: { body: '#2a2a2e', hook: '#222226', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.25)' },
+  beige: { body: '#d4c5a9', hook: '#c4b599', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.12)' },
+  rose: { body: '#e8b4b4', hook: '#d89999', ring: '#ffaacc', shadow: 'rgba(0,0,0,0.12)' }
+};
+
+// MediaPipe Face Mesh landmark indices for ear positioning
+// 234 = right tragion (right ear), 454 = left tragion (left ear)
+// 10 = forehead top center, 152 = chin bottom
+// 93 = right cheek outer, 323 = left cheek outer
+// 127 = right ear top area, 356 = left ear top area
+const LANDMARKS = {
+  rightEar: 234,
+  leftEar: 454,
+  foreheadTop: 10,
+  chinBottom: 152,
+  rightCheek: 93,
+  leftCheek: 323,
+  noseTip: 1,
+  rightEarTop: 127,
+  leftEarTop: 356,
+  rightTemple: 162,
+  leftTemple: 389
 };
 
 function setupVirtualFitting() {
@@ -2122,25 +2146,19 @@ function setupVirtualFitting() {
   fittingCanvas = document.getElementById('fitting-canvas');
   fittingCtx = fittingCanvas.getContext('2d');
 
-  // Start button
   document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
-
-  // Stop button
   document.getElementById('fitting-stop').addEventListener('click', stopFitting);
 
-  // Flip camera
-  document.getElementById('fitting-flip').addEventListener('click', () => {
+  document.getElementById('fitting-flip').addEventListener('click', async () => {
     fittingFacingMode = fittingFacingMode === 'user' ? 'environment' : 'user';
-    if (fittingStream) {
-      stopFittingCamera();
-      startFittingCamera();
+    if (fittingActive) {
+      stopFitting();
+      await startFitting();
     }
   });
 
-  // Capture button
   document.getElementById('fitting-capture').addEventListener('click', captureFitting);
 
-  // Color selection
   document.querySelectorAll('.fitting-color').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.fitting-color').forEach(b => b.classList.remove('active'));
@@ -2149,7 +2167,6 @@ function setupVirtualFitting() {
     });
   });
 
-  // Ear selection
   document.querySelectorAll('.fitting-ear-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.fitting-ear-btn').forEach(b => b.classList.remove('active'));
@@ -2158,7 +2175,6 @@ function setupVirtualFitting() {
     });
   });
 
-  // Position/scale sliders
   document.getElementById('fitting-pos-x').addEventListener('input', (e) => {
     fittingPosX = parseInt(e.target.value);
   });
@@ -2169,14 +2185,285 @@ function setupVirtualFitting() {
     fittingScale = parseInt(e.target.value) / 100;
   });
 
-  // Download button
   document.getElementById('fitting-download').addEventListener('click', downloadFittingImage);
 
-  // Retry button
   document.getElementById('fitting-retry').addEventListener('click', () => {
     document.getElementById('fitting-result').style.display = 'none';
     startFitting();
   });
+}
+
+async function initFaceMesh() {
+  if (faceMesh) return;
+
+  // Check if MediaPipe is loaded
+  if (typeof window.FaceMesh === 'undefined') {
+    console.warn('MediaPipe FaceMesh not loaded, falling back to manual mode');
+    return;
+  }
+
+  faceMesh = new window.FaceMesh({
+    locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+    }
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  faceMesh.onResults(onFaceMeshResults);
+}
+
+function onFaceMeshResults(results) {
+  if (!fittingActive) return;
+
+  const ctx = fittingCtx;
+  const w = fittingCanvas.width;
+  const h = fittingCanvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    lastFaceLandmarks = results.multiFaceLandmarks[0];
+    faceDetected = true;
+
+    const statusEl = document.getElementById('fitting-status');
+    if (statusEl) statusEl.textContent = '얼굴 인식됨 — AR 피팅 활성화';
+
+    // Hide the guide oval once face is detected
+    const guideOval = document.querySelector('.fitting-guide-oval');
+    if (guideOval) guideOval.style.opacity = '0.2';
+
+    const colors = FITTING_COLORS[fittingColor];
+    const time = performance.now() * 0.001;
+    const landmarks = lastFaceLandmarks;
+
+    if (fittingEar === 'right' || fittingEar === 'both') {
+      drawARHearingAid(ctx, w, h, 'right', landmarks, colors, time);
+    }
+    if (fittingEar === 'left' || fittingEar === 'both') {
+      drawARHearingAid(ctx, w, h, 'left', landmarks, colors, time);
+    }
+  } else {
+    faceDetected = false;
+    lastFaceLandmarks = null;
+
+    const statusEl = document.getElementById('fitting-status');
+    if (statusEl) statusEl.textContent = '얼굴을 카메라에 맞춰주세요...';
+
+    const guideOval = document.querySelector('.fitting-guide-oval');
+    if (guideOval) guideOval.style.opacity = '1';
+  }
+}
+
+function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
+  const isRight = ear === 'right';
+
+  // Get key landmark positions (normalized 0-1 -> pixel coords)
+  const earLandmark = landmarks[isRight ? LANDMARKS.rightEar : LANDMARKS.leftEar];
+  const earTopLandmark = landmarks[isRight ? LANDMARKS.rightEarTop : LANDMARKS.leftEarTop];
+  const templeLandmark = landmarks[isRight ? LANDMARKS.rightTemple : LANDMARKS.leftTemple];
+  const foreheadLandmark = landmarks[LANDMARKS.foreheadTop];
+  const chinLandmark = landmarks[LANDMARKS.chinBottom];
+  const noseLandmark = landmarks[LANDMARKS.noseTip];
+
+  // Convert normalized coords to pixel coords
+  const earX = earLandmark.x * w;
+  const earY = earLandmark.y * h;
+  const earTopX = earTopLandmark.x * w;
+  const earTopY = earTopLandmark.y * h;
+  const templeX = templeLandmark.x * w;
+  const templeY = templeLandmark.y * h;
+  const foreheadY = foreheadLandmark.y * h;
+  const chinY = chinLandmark.y * h;
+  const noseX = noseLandmark.x * w;
+
+  // Calculate face size for scaling
+  const faceHeight = chinY - foreheadY;
+  const baseScale = faceHeight / 280; // normalize to expected face height
+
+  // Calculate head rotation angle from ear positions
+  const rightEarPos = landmarks[LANDMARKS.rightEar];
+  const leftEarPos = landmarks[LANDMARKS.leftEar];
+  const headTilt = Math.atan2(
+    (rightEarPos.y - leftEarPos.y) * h,
+    (rightEarPos.x - leftEarPos.x) * w
+  );
+
+  // Calculate head yaw (turn) from nose vs midpoint of ears
+  const earMidX = (rightEarPos.x + leftEarPos.x) / 2 * w;
+  const headYaw = (noseLandmark.x * w - earMidX) / (faceHeight * 0.5);
+
+  // Position: slightly behind and above the ear tragion
+  // The hearing aid body sits behind the ear (further from nose)
+  const behindEarOffset = isRight ? 12 : -12;
+  const posX = earX + behindEarOffset * baseScale + fittingPosX * baseScale * 0.3;
+  const posY = (earTopY + earY) / 2 - 5 * baseScale + fittingPosY * baseScale * 0.3;
+
+  const scale = baseScale * fittingScale;
+
+  // Determine visibility based on head yaw
+  // If head is turned away from the ear side, reduce opacity
+  let visibility = 1;
+  if (isRight && headYaw > 0.3) {
+    visibility = Math.max(0, 1 - (headYaw - 0.3) * 2);
+  } else if (!isRight && headYaw < -0.3) {
+    visibility = Math.max(0, 1 - (-headYaw - 0.3) * 2);
+  }
+
+  if (visibility <= 0) return;
+
+  ctx.save();
+  ctx.globalAlpha = visibility;
+  ctx.translate(posX, posY);
+  ctx.rotate(headTilt);
+  ctx.scale(scale, scale);
+
+  // Mirror for left ear
+  if (!isRight) {
+    ctx.scale(-1, 1);
+  }
+
+  // === Draw shadow first ===
+  ctx.save();
+  ctx.filter = 'blur(4px)';
+  ctx.beginPath();
+  ctx.moveTo(2, -28);
+  ctx.bezierCurveTo(14, -30, 20, -18, 20, -3);
+  ctx.bezierCurveTo(20, 17, 16, 30, 10, 37);
+  ctx.bezierCurveTo(6, 42, -2, 42, -6, 37);
+  ctx.bezierCurveTo(-12, 30, -16, 17, -16, -3);
+  ctx.bezierCurveTo(-16, -18, -10, -30, 2, -28);
+  ctx.closePath();
+  ctx.fillStyle = colors.shadow;
+  ctx.fill();
+  ctx.restore();
+
+  // === Main body ===
+  ctx.beginPath();
+  ctx.moveTo(0, -30);
+  ctx.bezierCurveTo(12, -32, 18, -20, 18, -5);
+  ctx.bezierCurveTo(18, 15, 14, 28, 8, 35);
+  ctx.bezierCurveTo(4, 40, -4, 40, -8, 35);
+  ctx.bezierCurveTo(-14, 28, -18, 15, -18, -5);
+  ctx.bezierCurveTo(-18, -20, -12, -32, 0, -30);
+  ctx.closePath();
+
+  const bodyGrad = ctx.createLinearGradient(-18, -30, 18, 40);
+  bodyGrad.addColorStop(0, lightenColor(colors.body, 10));
+  bodyGrad.addColorStop(0.3, colors.body);
+  bodyGrad.addColorStop(1, shadeColor(colors.body, -25));
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = shadeColor(colors.body, -35);
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  // === Subtle body highlight (3D effect) ===
+  ctx.beginPath();
+  ctx.moveTo(-2, -28);
+  ctx.bezierCurveTo(6, -30, 12, -22, 12, -10);
+  ctx.bezierCurveTo(12, 0, 8, 8, 4, 12);
+  ctx.bezierCurveTo(0, 6, -6, -5, -6, -15);
+  ctx.bezierCurveTo(-6, -22, -4, -28, -2, -28);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fill();
+
+  // === Brand ring ===
+  ctx.beginPath();
+  ctx.ellipse(0, 2, 14, 2.5, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = colors.ring;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = colors.ring;
+  ctx.shadowBlur = 6 + Math.sin(time * 2) * 3;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // === LED ===
+  const ledGlow = 0.5 + Math.sin(time * 3) * 0.5;
+  ctx.beginPath();
+  ctx.arc(8, -18, 2, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(0, 255, 136, ${ledGlow})`;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 8 * ledGlow;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // === Mic grille ===
+  ctx.fillStyle = shadeColor(colors.body, -45);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 2; j++) {
+      ctx.beginPath();
+      ctx.arc(-3 + j * 6, -24 + i * 3, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // === Volume button ===
+  ctx.beginPath();
+  ctx.roundRect(10, -4, 5, 10, 2);
+  ctx.fillStyle = shadeColor(colors.body, -10);
+  ctx.fill();
+  ctx.strokeStyle = shadeColor(colors.body, -25);
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  // === Ear hook (curves over the ear) ===
+  ctx.beginPath();
+  ctx.moveTo(0, -30);
+  ctx.bezierCurveTo(-5, -44, -22, -50, -32, -42);
+  ctx.bezierCurveTo(-40, -36, -44, -22, -40, -8);
+  ctx.strokeStyle = colors.hook;
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  // Hook highlight
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // === Sound tube ===
+  ctx.beginPath();
+  ctx.moveTo(-40, -8);
+  ctx.bezierCurveTo(-38, 8, -34, 18, -30, 25);
+  ctx.strokeStyle = colors.hook;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // === Ear tip (dome) ===
+  ctx.beginPath();
+  ctx.ellipse(-30, 27, 7, 9, -0.2, 0, Math.PI * 2);
+  const tipGrad = ctx.createRadialGradient(-30, 27, 0, -30, 27, 9);
+  tipGrad.addColorStop(0, 'rgba(210, 210, 205, 0.85)');
+  tipGrad.addColorStop(0.7, 'rgba(190, 190, 185, 0.7)');
+  tipGrad.addColorStop(1, 'rgba(170, 170, 165, 0.5)');
+  ctx.fillStyle = tipGrad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(150,150,145,0.4)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function lightenColor(color, percent) {
+  return shadeColor(color, Math.abs(percent));
+}
+
+function shadeColor(color, percent) {
+  const num = parseInt(color.replace('#', ''), 16);
+  const amt = Math.round(2.55 * percent);
+  const R = Math.min(255, Math.max(0, (num >> 16) + amt));
+  const G = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
+  const B = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
+  return `rgb(${R},${G},${B})`;
 }
 
 async function startFitting() {
@@ -2190,107 +2477,130 @@ async function startFitting() {
     return;
   }
 
+  // Show loading state
+  overlay.innerHTML = `
+    <div class="loader-ring" style="width:40px;height:40px;margin:0 auto 12px;"></div>
+    <p class="hand-hint">카메라 및 얼굴 인식 모델 로딩 중...</p>
+  `;
+
   try {
-    await startFittingCamera();
+    // Initialize face mesh
+    await initFaceMesh();
+
+    // Start camera
+    fittingStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: fittingFacingMode,
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      }
+    });
+    fittingVideo.srcObject = fittingStream;
+    await fittingVideo.play();
+
+    fittingCanvas.width = fittingVideo.videoWidth || 640;
+    fittingCanvas.height = fittingVideo.videoHeight || 480;
+
+    fittingActive = true;
+
     overlay.classList.add('hidden');
     document.getElementById('fitting-guide').style.display = 'flex';
     document.getElementById('fitting-controls-overlay').style.display = 'flex';
-    drawFittingOverlay();
+
+    if (faceMesh) {
+      // Use MediaPipe Camera utility for smooth frame processing
+      if (typeof window.Camera !== 'undefined') {
+        fittingCameraUtil = new window.Camera(fittingVideo, {
+          onFrame: async () => {
+            if (fittingActive && faceMesh) {
+              await faceMesh.send({ image: fittingVideo });
+            }
+          },
+          width: 640,
+          height: 480
+        });
+        fittingCameraUtil.start();
+      } else {
+        // Fallback: manual frame sending
+        sendFittingFrame();
+      }
+    } else {
+      // No face mesh available — fall back to manual positioning
+      drawFittingFallback();
+    }
   } catch (err) {
-    console.warn('Camera error:', err);
+    console.warn('Fitting error:', err);
+    overlay.classList.remove('hidden');
     overlay.innerHTML = `
       <p style="color:#ff6666;">카메라 접근이 거부되었습니다.</p>
       <p class="hand-hint">브라우저 설정에서 카메라 권한을 허용해주세요.</p>
+      <button class="btn-primary" id="fitting-start-btn" style="margin-top:12px;">
+        <span>📷</span> 다시 시도
+      </button>
     `;
+    const retryBtn = document.getElementById('fitting-start-btn');
+    if (retryBtn) retryBtn.addEventListener('click', startFitting);
   }
 }
 
-async function startFittingCamera() {
-  fittingStream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: fittingFacingMode,
-      width: { ideal: 640 },
-      height: { ideal: 480 }
+function sendFittingFrame() {
+  if (!fittingActive || !faceMesh) return;
+  faceMesh.send({ image: fittingVideo }).then(() => {
+    if (fittingActive) {
+      fittingAnimFrame = requestAnimationFrame(sendFittingFrame);
     }
   });
-  fittingVideo.srcObject = fittingStream;
-  await fittingVideo.play();
-
-  // Set canvas size to match video
-  fittingCanvas.width = fittingVideo.videoWidth || 640;
-  fittingCanvas.height = fittingVideo.videoHeight || 480;
 }
 
-function stopFittingCamera() {
-  if (fittingStream) {
-    fittingStream.getTracks().forEach(t => t.stop());
-    fittingStream = null;
-  }
-}
-
-function stopFitting() {
-  if (fittingAnimFrame) {
-    cancelAnimationFrame(fittingAnimFrame);
-    fittingAnimFrame = null;
-  }
-  stopFittingCamera();
-  fittingVideo.srcObject = null;
-
-  document.getElementById('fitting-overlay').classList.remove('hidden');
-  document.getElementById('fitting-guide').style.display = 'none';
-  document.getElementById('fitting-controls-overlay').style.display = 'none';
-}
-
-function drawFittingOverlay() {
-  if (!fittingStream) return;
+// Fallback when MediaPipe is not available
+function drawFittingFallback() {
+  if (!fittingActive) return;
 
   const ctx = fittingCtx;
   const w = fittingCanvas.width;
   const h = fittingCanvas.height;
-
   ctx.clearRect(0, 0, w, h);
 
-  // Draw hearing aid overlay(s)
   const colors = FITTING_COLORS[fittingColor];
   const time = performance.now() * 0.001;
+  const isSelfie = fittingFacingMode === 'user';
 
-  if (fittingEar === 'right' || fittingEar === 'both') {
-    drawHearingAidOverlay(ctx, w, h, 'right', colors, time);
-  }
-  if (fittingEar === 'left' || fittingEar === 'both') {
-    drawHearingAidOverlay(ctx, w, h, 'left', colors, time);
-  }
+  // Estimated positions without face detection
+  const drawSide = (ear) => {
+    const isRight = ear === 'right';
+    const screenSide = isSelfie ? !isRight : isRight;
+    const baseX = screenSide ? w * 0.78 : w * 0.22;
+    const baseY = h * 0.38;
+    const posX = baseX + fittingPosX * (w / 500);
+    const posY = baseY + fittingPosY * (h / 500);
+    const scale = fittingScale * (h / 500);
 
-  fittingAnimFrame = requestAnimationFrame(drawFittingOverlay);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.translate(posX, posY);
+    ctx.scale(scale, scale);
+    if (!screenSide) ctx.scale(-1, 1);
+
+    // Reuse the same drawing code (simplified call)
+    drawHearingAidShape(ctx, colors, time);
+
+    ctx.restore();
+  };
+
+  if (fittingEar === 'right' || fittingEar === 'both') drawSide('right');
+  if (fittingEar === 'left' || fittingEar === 'both') drawSide('left');
+
+  // Show hint that face detection is unavailable
+  ctx.fillStyle = 'rgba(255,200,0,0.7)';
+  ctx.font = `${w < 400 ? 10 : 13}px "Noto Sans KR", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('얼굴 인식 로딩 중... 수동 조절 모드', w / 2, h - 16);
+
+  fittingAnimFrame = requestAnimationFrame(drawFittingFallback);
 }
 
-function drawHearingAidOverlay(ctx, w, h, ear, colors, time) {
-  ctx.save();
-
-  // Base position: ear area (estimated from typical face position in selfie)
-  // For 'user' (selfie) camera, right ear appears on LEFT side of screen
-  const isSelfie = fittingFacingMode === 'user';
-  const isRight = ear === 'right';
-  const screenSide = (isSelfie ? !isRight : isRight);
-
-  const baseX = screenSide ? w * 0.78 : w * 0.22;
-  const baseY = h * 0.38;
-
-  // Apply user adjustments
-  const posX = baseX + fittingPosX * (w / 500);
-  const posY = baseY + fittingPosY * (h / 500);
-  const scale = fittingScale * (h / 500);
-
-  ctx.translate(posX, posY);
-  ctx.scale(scale, scale);
-
-  // Mirror for left ear
-  if (!screenSide) {
-    ctx.scale(-1, 1);
-  }
-
-  // Draw BTE hearing aid shape
-  // Main body (behind ear)
+function drawHearingAidShape(ctx, colors, time) {
+  // Body
   ctx.beginPath();
   ctx.moveTo(0, -30);
   ctx.bezierCurveTo(12, -32, 18, -20, 18, -5);
@@ -2299,21 +2609,17 @@ function drawHearingAidOverlay(ctx, w, h, ear, colors, time) {
   ctx.bezierCurveTo(-14, 28, -18, 15, -18, -5);
   ctx.bezierCurveTo(-18, -20, -12, -32, 0, -30);
   ctx.closePath();
-
-  // Body gradient
   const bodyGrad = ctx.createLinearGradient(-18, -30, 18, 40);
-  bodyGrad.addColorStop(0, colors.body);
-  bodyGrad.addColorStop(0.5, colors.body);
-  bodyGrad.addColorStop(1, shadeColor(colors.body, -20));
+  bodyGrad.addColorStop(0, lightenColor(colors.body, 10));
+  bodyGrad.addColorStop(0.3, colors.body);
+  bodyGrad.addColorStop(1, shadeColor(colors.body, -25));
   ctx.fillStyle = bodyGrad;
   ctx.fill();
-
-  // Body border (subtle)
-  ctx.strokeStyle = shadeColor(colors.body, -30);
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = shadeColor(colors.body, -35);
+  ctx.lineWidth = 0.8;
   ctx.stroke();
 
-  // Brand ring (glowing accent)
+  // Brand ring
   ctx.beginPath();
   ctx.ellipse(0, 2, 14, 2.5, 0, 0, Math.PI * 2);
   ctx.strokeStyle = colors.ring;
@@ -2323,7 +2629,7 @@ function drawHearingAidOverlay(ctx, w, h, ear, colors, time) {
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // LED indicator
+  // LED
   const ledGlow = 0.5 + Math.sin(time * 3) * 0.5;
   ctx.beginPath();
   ctx.arc(8, -18, 2, 0, Math.PI * 2);
@@ -2336,55 +2642,73 @@ function drawHearingAidOverlay(ctx, w, h, ear, colors, time) {
   // Ear hook
   ctx.beginPath();
   ctx.moveTo(0, -30);
-  ctx.bezierCurveTo(-5, -42, -20, -48, -30, -40);
-  ctx.bezierCurveTo(-38, -34, -42, -20, -38, -8);
+  ctx.bezierCurveTo(-5, -44, -22, -50, -32, -42);
+  ctx.bezierCurveTo(-40, -36, -44, -22, -40, -8);
   ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 3.5;
   ctx.lineCap = 'round';
   ctx.stroke();
 
   // Sound tube
   ctx.beginPath();
-  ctx.moveTo(-38, -8);
-  ctx.bezierCurveTo(-36, 5, -32, 15, -28, 22);
+  ctx.moveTo(-40, -8);
+  ctx.bezierCurveTo(-38, 8, -34, 18, -30, 25);
   ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2.5;
   ctx.stroke();
 
-  // Ear tip (dome)
+  // Ear tip
   ctx.beginPath();
-  ctx.ellipse(-28, 24, 6, 8, -0.2, 0, Math.PI * 2);
-  const tipGrad = ctx.createRadialGradient(-28, 24, 0, -28, 24, 8);
-  tipGrad.addColorStop(0, 'rgba(200, 200, 195, 0.8)');
-  tipGrad.addColorStop(1, 'rgba(180, 180, 175, 0.6)');
+  ctx.ellipse(-30, 27, 7, 9, -0.2, 0, Math.PI * 2);
+  const tipGrad = ctx.createRadialGradient(-30, 27, 0, -30, 27, 9);
+  tipGrad.addColorStop(0, 'rgba(210, 210, 205, 0.85)');
+  tipGrad.addColorStop(1, 'rgba(170, 170, 165, 0.5)');
   ctx.fillStyle = tipGrad;
   ctx.fill();
-
-  // Mic grille dots
-  ctx.fillStyle = shadeColor(colors.body, -40);
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 2; j++) {
-      ctx.beginPath();
-      ctx.arc(-3 + j * 6, -24 + i * 3, 0.8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  ctx.restore();
 }
 
-// Helper to darken/lighten hex color
-function shadeColor(color, percent) {
-  const num = parseInt(color.replace('#', ''), 16);
-  const amt = Math.round(2.55 * percent);
-  const R = Math.min(255, Math.max(0, (num >> 16) + amt));
-  const G = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
-  const B = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
-  return `rgb(${R},${G},${B})`;
+function stopFitting() {
+  fittingActive = false;
+
+  if (fittingAnimFrame) {
+    cancelAnimationFrame(fittingAnimFrame);
+    fittingAnimFrame = null;
+  }
+
+  if (fittingCameraUtil) {
+    fittingCameraUtil.stop();
+    fittingCameraUtil = null;
+  }
+
+  if (fittingStream) {
+    fittingStream.getTracks().forEach(t => t.stop());
+    fittingStream = null;
+  }
+
+  if (fittingVideo) fittingVideo.srcObject = null;
+
+  lastFaceLandmarks = null;
+  faceDetected = false;
+
+  const overlay = document.getElementById('fitting-overlay');
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `
+    <button class="btn-primary" id="fitting-start-btn">
+      <span>📷</span> AR 피팅 시작
+    </button>
+    <p class="hand-hint">얼굴을 인식하여 보청기 착용 모습을<br/>실시간으로 확인할 수 있습니다</p>
+  `;
+  document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
+
+  document.getElementById('fitting-guide').style.display = 'none';
+  document.getElementById('fitting-controls-overlay').style.display = 'none';
+
+  // Reset guide oval opacity
+  const guideOval = document.querySelector('.fitting-guide-oval');
+  if (guideOval) guideOval.style.opacity = '1';
 }
 
 function captureFitting() {
-  // Create a combined canvas with video + overlay
   const captureCanvas = document.createElement('canvas');
   captureCanvas.width = fittingCanvas.width;
   captureCanvas.height = fittingCanvas.height;
@@ -2396,13 +2720,17 @@ function captureFitting() {
   // Draw overlay
   captureCtx.drawImage(fittingCanvas, 0, 0);
 
-  // Show result
+  // Add watermark
+  captureCtx.fillStyle = 'rgba(255,255,255,0.5)';
+  captureCtx.font = '12px "Noto Sans KR", sans-serif';
+  captureCtx.textAlign = 'right';
+  captureCtx.fillText('SoundClear Virtual Fitting', captureCanvas.width - 10, captureCanvas.height - 10);
+
   const resultDiv = document.getElementById('fitting-result');
   const resultImg = document.getElementById('fitting-result-img');
   resultImg.src = captureCanvas.toDataURL('image/png');
   resultDiv.style.display = 'block';
 
-  // Pause camera to save resources
   stopFitting();
 }
 
