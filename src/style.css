@@ -1545,6 +1545,110 @@ footer {
   justify-content: center;
 }
 
+/* ===== FITTING TYPE SELECTOR ===== */
+.fitting-type-select {
+  margin-bottom: 8px;
+}
+
+.fitting-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.fitting-type-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-family: inherit;
+  color: var(--text-dim);
+}
+
+.fitting-type-btn:hover {
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+.fitting-type-btn.active {
+  background: rgba(0, 200, 255, 0.1);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.fitting-type-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Type icon shapes using pseudo-elements */
+.fitting-type-ric::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  width: 8px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--primary);
+  box-shadow: -6px 14px 0 2px rgba(0,200,255,0.3);
+}
+
+.fitting-type-cic::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d4c5a9;
+}
+
+.fitting-type-itc::after {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: 11px;
+  width: 16px;
+  height: 14px;
+  border-radius: 50% 50% 40% 40%;
+  background: #d4c5a9;
+  border: 1px solid rgba(0,0,0,0.15);
+}
+
+.fitting-type-bte::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 12px;
+  width: 10px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--primary);
+  box-shadow: -8px 16px 0 3px rgba(0,200,255,0.3);
+}
+
+.fitting-type-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.fitting-type-desc {
+  font-size: 0.65rem;
+  opacity: 0.6;
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1024px) {
   .product-showcase { grid-template-columns: 1fr; gap: 30px; }
@@ -1613,6 +1717,7 @@ footer {
   .fitting-camera-wrap { aspect-ratio: 3/4; }
   .fitting-colors { justify-content: center; }
   .fitting-ear-btns { flex-wrap: wrap; }
+  .fitting-type-grid { grid-template-columns: repeat(2, 1fr); }
 
   /* Touch indicator visible on touch devices */
   .touch-indicator { display: block; }

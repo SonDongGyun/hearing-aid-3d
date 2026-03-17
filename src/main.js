@@ -2107,6 +2107,7 @@ let fittingCtx = null;
 let fittingAnimFrame = null;
 let fittingFacingMode = 'user';
 let fittingColor = 'silver';
+let fittingType = 'ric'; // 'ric', 'cic', 'itc', 'bte'
 let fittingEar = 'right';
 let fittingPosX = 0, fittingPosY = 0, fittingScale = 1;
 let faceMesh = null;
@@ -2119,9 +2120,11 @@ let fittingActive = false;
 let fittingScene = null;
 let fittingCamera3D = null;
 let fittingRenderer3D = null;
-let fittingModelRight = null;   // 3D model for right ear
-let fittingModelLeft = null;    // 3D model for left ear (mirrored)
+let fittingModelRight = null;   // 3D model for right ear (RIC/BTE)
+let fittingModelLeft = null;    // 3D model for left ear (mirrored, RIC/BTE)
 let fittingModelLoaded = false;
+let fittingCICRight = null, fittingCICLeft = null;
+let fittingITCRight = null, fittingITCLeft = null;
 
 const FITTING_COLORS_3D = {
   silver: { body: 0xd0d5e0, ring: 0x00c8ff },
@@ -2137,6 +2140,92 @@ const LANDMARKS = {
   chinBottom: 152,
   noseTip: 1
 };
+
+// Create in-canal hearing aid models (CIC/ITC) using simple geometry
+function createInCanalModel(type) {
+  const group = new THREE.Group();
+
+  if (type === 'cic') {
+    // CIC: tiny sphere barely visible in ear canal
+    const shellGeo = new THREE.SphereGeometry(0.3, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.6);
+    const shellMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd4c5a9,
+      metalness: 0.05,
+      roughness: 0.5,
+      clearcoat: 0.3
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    shell.name = 'cic_shell';
+    group.add(shell);
+
+    // Tiny extraction string
+    const stringGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8);
+    const stringMat = new THREE.MeshBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.6 });
+    const string = new THREE.Mesh(stringGeo, stringMat);
+    string.position.set(0, -0.15, 0.15);
+    string.rotation.x = -0.3;
+    string.name = 'cic_string';
+    group.add(string);
+
+    // Faceplate (small flat disc)
+    const plateGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.04, 16);
+    const plateMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc4b599,
+      metalness: 0.1,
+      roughness: 0.4
+    });
+    const plate = new THREE.Mesh(plateGeo, plateMat);
+    plate.position.z = 0.15;
+    plate.rotation.x = Math.PI / 2;
+    plate.name = 'cic_plate';
+    group.add(plate);
+  } else if (type === 'itc') {
+    // ITC: slightly larger shell visible at ear opening
+    const shellGeo = new THREE.SphereGeometry(0.5, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    const shellMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd4c5a9,
+      metalness: 0.05,
+      roughness: 0.45,
+      clearcoat: 0.3
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    shell.name = 'itc_shell';
+    group.add(shell);
+
+    // Faceplate with vent hole
+    const plateGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.05, 16);
+    const plateMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc4b599,
+      metalness: 0.1,
+      roughness: 0.35,
+      clearcoat: 0.2
+    });
+    const plate = new THREE.Mesh(plateGeo, plateMat);
+    plate.position.z = 0.2;
+    plate.rotation.x = Math.PI / 2;
+    plate.name = 'itc_plate';
+    group.add(plate);
+
+    // Volume control (tiny button)
+    const btnGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.06, 8);
+    const btnMat = new THREE.MeshPhysicalMaterial({ color: 0x999999, metalness: 0.5, roughness: 0.3 });
+    const btn = new THREE.Mesh(btnGeo, btnMat);
+    btn.position.set(0.15, 0.1, 0.22);
+    btn.rotation.x = Math.PI / 2;
+    btn.name = 'itc_button';
+    group.add(btn);
+
+    // Battery door line (subtle)
+    const doorGeo = new THREE.BoxGeometry(0.32, 0.02, 0.01);
+    const doorMat = new THREE.MeshBasicMaterial({ color: 0xaa9977 });
+    const door = new THREE.Mesh(doorGeo, doorMat);
+    door.position.set(0, -0.05, 0.23);
+    door.name = 'itc_door';
+    group.add(door);
+  }
+
+  return group;
+}
 
 // Initialize 3D scene for AR overlay rendering
 function initFitting3D() {
@@ -2169,6 +2258,23 @@ function initFitting3D() {
   const rimLight = new THREE.PointLight(0x00c8ff, 0.6, 20);
   rimLight.position.set(0, 2, -3);
   fittingScene.add(rimLight);
+
+  // Create in-canal models (always available, no GLB needed)
+  const cicModel = createInCanalModel('cic');
+  fittingCICRight = cicModel.clone();
+  fittingCICRight.visible = false;
+  fittingScene.add(fittingCICRight);
+  fittingCICLeft = cicModel.clone();
+  fittingCICLeft.visible = false;
+  fittingScene.add(fittingCICLeft);
+
+  const itcModel = createInCanalModel('itc');
+  fittingITCRight = itcModel.clone();
+  fittingITCRight.visible = false;
+  fittingScene.add(fittingITCRight);
+  fittingITCLeft = itcModel.clone();
+  fittingITCLeft.visible = false;
+  fittingScene.add(fittingITCLeft);
 
   // Load GLB model
   const loader = new GLTFLoader();
@@ -2246,6 +2352,7 @@ function updateFittingModelColor(color) {
   const colors = FITTING_COLORS_3D[color];
   if (!colors) return;
 
+  // Update BTE/RIC models
   [fittingModelRight, fittingModelLeft].forEach(model => {
     if (!model) return;
     model.traverse((child) => {
@@ -2255,9 +2362,19 @@ function updateFittingModelColor(color) {
         } else if (child.name === 'brand_ring') {
           child.material.color.setHex(colors.ring);
         } else if (child.name === 'ear_hook' || child.name === 'sound_tube') {
-          // Slightly lighter version of body color
-          child.material.color.setHex(colors.body).offsetHSL(0, -0.05, 0.05);
+          child.material.color.setHex(colors.body);
         }
+      }
+    });
+  });
+
+  // Update in-canal models with skin-tone matching colors
+  const inCanalColor = (color === 'beige' || color === 'rose') ? colors.body : 0xd4c5a9;
+  [fittingCICRight, fittingCICLeft, fittingITCRight, fittingITCLeft].forEach(model => {
+    if (!model) return;
+    model.traverse((child) => {
+      if (child.isMesh && (child.name.includes('shell') || child.name.includes('plate'))) {
+        child.material.color.setHex(inCanalColor);
       }
     });
   });
@@ -2298,6 +2415,16 @@ function setupVirtualFitting() {
       document.querySelectorAll('.fitting-ear-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       fittingEar = btn.dataset.ear;
+    });
+  });
+
+  // Type selection
+  document.querySelectorAll('.fitting-type-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fitting-type-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      fittingType = btn.dataset.type;
+      updateFittingModelColor(fittingColor);
     });
   });
 
@@ -2369,6 +2496,10 @@ function onFaceMeshResults(results) {
     // Hide models when no face
     if (fittingModelRight) fittingModelRight.visible = false;
     if (fittingModelLeft) fittingModelLeft.visible = false;
+    if (fittingCICRight) fittingCICRight.visible = false;
+    if (fittingCICLeft) fittingCICLeft.visible = false;
+    if (fittingITCRight) fittingITCRight.visible = false;
+    if (fittingITCLeft) fittingITCLeft.visible = false;
 
     // Clear the overlay
     fittingCtx.clearRect(0, 0, w, h);
@@ -2382,7 +2513,7 @@ function onFaceMeshResults(results) {
 }
 
 function render3DFitting(w, h, landmarks) {
-  if (!fittingModelLoaded || !fittingRenderer3D) return;
+  if (!fittingRenderer3D) return;
 
   // Ensure renderer matches canvas size
   if (fittingRenderer3D.domElement.width !== w || fittingRenderer3D.domElement.height !== h) {
@@ -2410,22 +2541,60 @@ function render3DFitting(w, h, landmarks) {
   // Head yaw
   const headYaw = (nose.x * w - faceCenterX) / (faceWidth * 0.5);
 
-  // 3D model scale based on face size
-  const modelScale = faceHeight / 140 * fittingScale;
+  // Scale divisors per type (CRITICAL: these produce tiny, realistic sizes)
+  // Model is ~4 units tall. Visible height is ~5.36 units.
+  // Face takes ~3 units of visible height.
+  // BTE: 20% of face → faceHeight/1700
+  // RIC: 15% of face → faceHeight/2300
+  // ITC/CIC: these use different models with different base sizes
+  const SCALE_DIVISORS = {
+    ric: 2300,
+    bte: 1700,
+    itc: 3000,
+    cic: 4500
+  };
+
+  const scaleDivisor = SCALE_DIVISORS[fittingType] || 2300;
+  const modelScale = faceHeight / scaleDivisor * fittingScale;
 
   const time = performance.now() * 0.001;
 
-  // Position and show/hide models for each ear
+  // Hide ALL models first
+  if (fittingModelRight) fittingModelRight.visible = false;
+  if (fittingModelLeft) fittingModelLeft.visible = false;
+  if (fittingCICRight) fittingCICRight.visible = false;
+  if (fittingCICLeft) fittingCICLeft.visible = false;
+  if (fittingITCRight) fittingITCRight.visible = false;
+  if (fittingITCLeft) fittingITCLeft.visible = false;
+
+  // Select which models to use based on type
+  let rightModel, leftModel;
+  if (fittingType === 'cic') {
+    rightModel = fittingCICRight;
+    leftModel = fittingCICLeft;
+  } else if (fittingType === 'itc') {
+    rightModel = fittingITCRight;
+    leftModel = fittingITCLeft;
+  } else {
+    // RIC and BTE use the GLB model
+    if (!fittingModelLoaded) return;
+    rightModel = fittingModelRight;
+    leftModel = fittingModelLeft;
+  }
+
   const showRight = fittingEar === 'right' || fittingEar === 'both';
   const showLeft = fittingEar === 'left' || fittingEar === 'both';
 
-  positionEarModel(fittingModelRight, showRight, 'right',
-    rightEdge, leftEdge, forehead, chin, nose,
-    w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
-
-  positionEarModel(fittingModelLeft, showLeft, 'left',
-    rightEdge, leftEdge, forehead, chin, nose,
-    w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
+  if (rightModel) {
+    positionEarModel(rightModel, showRight, 'right',
+      rightEdge, leftEdge, forehead, chin, nose,
+      w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
+  }
+  if (leftModel) {
+    positionEarModel(leftModel, showLeft, 'left',
+      rightEdge, leftEdge, forehead, chin, nose,
+      w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
+  }
 
   // Render 3D scene to offscreen canvas
   fittingRenderer3D.render(fittingScene, fittingCamera3D);
@@ -2463,9 +2632,14 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const dirFromCenter = edgeX - faceCenterX;
   const dirSign = dirFromCenter > 0 ? 1 : -1;
 
+  // Type-specific positioning offsets
+  const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
+  const xOffsetPercent = isBehindEar ? 0.12 : 0.04; // in-canal types are closer to the face
+  const yPercent = isBehindEar ? 0.52 : 0.50; // in-canal types are at ear canal level
+
   // Push beyond face edge toward actual ear
-  const imgX = edgeX + dirSign * faceWidth * 0.12 + fittingPosX * (faceHeight / 280) * 0.3;
-  const imgY = (forehead.y + (chin.y - forehead.y) * 0.52) * h + fittingPosY * (faceHeight / 280) * 0.3;
+  const imgX = edgeX + dirSign * faceWidth * xOffsetPercent + fittingPosX * (faceHeight / 280) * 0.3;
+  const imgY = (forehead.y + (chin.y - forehead.y) * yPercent) * h + fittingPosY * (faceHeight / 280) * 0.3;
 
   // Convert image coordinates (pixels) to Three.js world coordinates
   // Camera FOV = 30deg, distance = 10, so visible height ≈ 10 * 2 * tan(15deg) ≈ 5.36
@@ -2483,13 +2657,22 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
     modelScale
   );
 
-  // Rotation: face the camera + apply head tilt
-  // BTE hearing aid viewed from the side: rotate to show the profile
-  model.rotation.set(
-    0.1,                           // slight upward tilt
-    isRight ? -0.8 : 0.8,         // angled to show profile (not straight at camera)
-    -headTilt                      // match head roll
-  );
+  // Rotation depends on type
+  if (fittingType === 'cic' || fittingType === 'itc') {
+    // In-canal: face outward from the ear, oriented into the ear canal
+    model.rotation.set(
+      0,
+      isRight ? -1.2 : 1.2,   // angled into ear canal
+      -headTilt
+    );
+  } else {
+    // BTE/RIC: show profile of behind-ear unit
+    model.rotation.set(
+      0.1,                           // slight upward tilt
+      isRight ? -0.8 : 0.8,         // angled to show profile
+      -headTilt                      // match head roll
+    );
+  }
 
   // Apply head yaw to rotate model naturally
   model.rotation.y += headYaw * 0.4;
@@ -2606,11 +2789,14 @@ function sendFittingFrame() {
 function drawFittingFallback() {
   if (!fittingActive) return;
 
-  if (fittingModelLoaded && fittingRenderer3D) {
+  const canRenderFallback = fittingRenderer3D && (fittingModelLoaded || fittingType === 'cic' || fittingType === 'itc');
+  if (canRenderFallback) {
     const w = fittingCanvas.width;
     const h = fittingCanvas.height;
     const isSelfie = fittingFacingMode === 'user';
-    const modelScale = (h / 400) * fittingScale;
+    const faceHeightEstimate = h * 0.55;
+    const FALLBACK_SCALE_DIVISORS = { ric: 2300, bte: 1700, itc: 3000, cic: 4500 };
+    const modelScale = faceHeightEstimate / (FALLBACK_SCALE_DIVISORS[fittingType] || 2300) * fittingScale;
     const time = performance.now() * 0.001;
 
     const visibleHeight = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(fittingCamera3D.fov / 2));
@@ -2647,8 +2833,29 @@ function drawFittingFallback() {
       });
     };
 
-    placeModel(fittingModelRight, 'right');
-    placeModel(fittingModelLeft, 'left');
+    // Hide ALL models first
+    if (fittingModelRight) fittingModelRight.visible = false;
+    if (fittingModelLeft) fittingModelLeft.visible = false;
+    if (fittingCICRight) fittingCICRight.visible = false;
+    if (fittingCICLeft) fittingCICLeft.visible = false;
+    if (fittingITCRight) fittingITCRight.visible = false;
+    if (fittingITCLeft) fittingITCLeft.visible = false;
+
+    // Select models based on type
+    let rightFallback, leftFallback;
+    if (fittingType === 'cic') {
+      rightFallback = fittingCICRight;
+      leftFallback = fittingCICLeft;
+    } else if (fittingType === 'itc') {
+      rightFallback = fittingITCRight;
+      leftFallback = fittingITCLeft;
+    } else {
+      rightFallback = fittingModelRight;
+      leftFallback = fittingModelLeft;
+    }
+
+    if (rightFallback) placeModel(rightFallback, 'right');
+    if (leftFallback) placeModel(leftFallback, 'left');
 
     fittingRenderer3D.render(fittingScene, fittingCamera3D);
 
@@ -2688,6 +2895,10 @@ function stopFitting() {
   // Hide 3D models
   if (fittingModelRight) fittingModelRight.visible = false;
   if (fittingModelLeft) fittingModelLeft.visible = false;
+  if (fittingCICRight) fittingCICRight.visible = false;
+  if (fittingCICLeft) fittingCICLeft.visible = false;
+  if (fittingITCRight) fittingITCRight.visible = false;
+  if (fittingITCLeft) fittingITCLeft.visible = false;
 
   // Clear overlay canvas
   if (fittingCtx && fittingCanvas) {
