@@ -2123,22 +2123,20 @@ const FITTING_COLORS = {
 };
 
 // MediaPipe Face Mesh landmark indices for ear positioning
-// 234 = right tragion (right ear), 454 = left tragion (left ear)
+// Reference: https://github.com/google/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png
+// 234 = right tragion (right ear opening), 454 = left tragion (left ear opening)
 // 10 = forehead top center, 152 = chin bottom
-// 93 = right cheek outer, 323 = left cheek outer
-// 127 = right ear top area, 356 = left ear top area
+// 132 = right face edge (jaw near ear), 361 = left face edge (jaw near ear)
 const LANDMARKS = {
-  rightEar: 234,
-  leftEar: 454,
+  rightEar: 234,          // right tragion — the actual ear position
+  leftEar: 454,           // left tragion — the actual ear position
   foreheadTop: 10,
   chinBottom: 152,
-  rightCheek: 93,
-  leftCheek: 323,
   noseTip: 1,
-  rightEarTop: 127,
-  leftEarTop: 356,
-  rightTemple: 162,
-  leftTemple: 389
+  rightJawEar: 132,       // right jawline near ear
+  leftJawEar: 361,        // left jawline near ear
+  rightFaceEdge: 177,     // right face contour upper
+  leftFaceEdge: 401       // left face contour upper
 };
 
 function setupVirtualFitting() {
@@ -2263,10 +2261,10 @@ function onFaceMeshResults(results) {
 function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
   const isRight = ear === 'right';
 
-  // Get key landmark positions (normalized 0-1 -> pixel coords)
+  // Get ear tragion landmark — this is the actual ear position
   const earLandmark = landmarks[isRight ? LANDMARKS.rightEar : LANDMARKS.leftEar];
-  const earTopLandmark = landmarks[isRight ? LANDMARKS.rightEarTop : LANDMARKS.leftEarTop];
-  const templeLandmark = landmarks[isRight ? LANDMARKS.rightTemple : LANDMARKS.leftTemple];
+  const jawEarLandmark = landmarks[isRight ? LANDMARKS.rightJawEar : LANDMARKS.leftJawEar];
+  const faceEdgeLandmark = landmarks[isRight ? LANDMARKS.rightFaceEdge : LANDMARKS.leftFaceEdge];
   const foreheadLandmark = landmarks[LANDMARKS.foreheadTop];
   const chinLandmark = landmarks[LANDMARKS.chinBottom];
   const noseLandmark = landmarks[LANDMARKS.noseTip];
@@ -2274,17 +2272,16 @@ function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
   // Convert normalized coords to pixel coords
   const earX = earLandmark.x * w;
   const earY = earLandmark.y * h;
-  const earTopX = earTopLandmark.x * w;
-  const earTopY = earTopLandmark.y * h;
-  const templeX = templeLandmark.x * w;
-  const templeY = templeLandmark.y * h;
+  const jawEarX = jawEarLandmark.x * w;
+  const jawEarY = jawEarLandmark.y * h;
+  const faceEdgeX = faceEdgeLandmark.x * w;
+  const faceEdgeY = faceEdgeLandmark.y * h;
   const foreheadY = foreheadLandmark.y * h;
   const chinY = chinLandmark.y * h;
-  const noseX = noseLandmark.x * w;
 
   // Calculate face size for scaling
   const faceHeight = chinY - foreheadY;
-  const baseScale = faceHeight / 280; // normalize to expected face height
+  const baseScale = faceHeight / 280;
 
   // Calculate head rotation angle from ear positions
   const rightEarPos = landmarks[LANDMARKS.rightEar];
@@ -2298,16 +2295,17 @@ function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
   const earMidX = (rightEarPos.x + leftEarPos.x) / 2 * w;
   const headYaw = (noseLandmark.x * w - earMidX) / (faceHeight * 0.5);
 
-  // Position: slightly behind and above the ear tragion
-  // The hearing aid body sits behind the ear (further from nose)
-  const behindEarOffset = isRight ? 12 : -12;
-  const posX = earX + behindEarOffset * baseScale + fittingPosX * baseScale * 0.3;
-  const posY = (earTopY + earY) / 2 - 5 * baseScale + fittingPosY * baseScale * 0.3;
+  // BTE hearing aid sits BEHIND the ear:
+  // - X: push outward from face (away from nose), past the ear tragion
+  // - Y: centered vertically at ear tragion level (not eye level!)
+  const outwardPush = isRight ? 25 : -25; // push further out from the ear
+  const posX = earX + outwardPush * baseScale + fittingPosX * baseScale * 0.3;
+  // Use ear tragion Y directly — this IS the ear, not the eye
+  const posY = earY - 10 * baseScale + fittingPosY * baseScale * 0.3;
 
   const scale = baseScale * fittingScale;
 
   // Determine visibility based on head yaw
-  // If head is turned away from the ear side, reduce opacity
   let visibility = 1;
   if (isRight && headYaw > 0.3) {
     visibility = Math.max(0, 1 - (headYaw - 0.3) * 2);
