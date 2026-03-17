@@ -2261,56 +2261,58 @@ function onFaceMeshResults(results) {
 function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
   const isRight = ear === 'right';
 
-  // Get ear tragion landmark — this is the actual ear position
-  const earLandmark = landmarks[isRight ? LANDMARKS.rightEar : LANDMARKS.leftEar];
-  const jawEarLandmark = landmarks[isRight ? LANDMARKS.rightJawEar : LANDMARKS.leftJawEar];
-  const faceEdgeLandmark = landmarks[isRight ? LANDMARKS.rightFaceEdge : LANDMARKS.leftFaceEdge];
-  const foreheadLandmark = landmarks[LANDMARKS.foreheadTop];
-  const chinLandmark = landmarks[LANDMARKS.chinBottom];
-  const noseLandmark = landmarks[LANDMARKS.noseTip];
+  // Core landmarks
+  const rightEdge = landmarks[LANDMARKS.rightEar];  // face edge near right ear
+  const leftEdge = landmarks[LANDMARKS.leftEar];     // face edge near left ear
+  const forehead = landmarks[LANDMARKS.foreheadTop];
+  const chin = landmarks[LANDMARKS.chinBottom];
+  const nose = landmarks[LANDMARKS.noseTip];
 
-  // Convert normalized coords to pixel coords
-  const earX = earLandmark.x * w;
-  const earY = earLandmark.y * h;
-  const jawEarX = jawEarLandmark.x * w;
-  const jawEarY = jawEarLandmark.y * h;
-  const faceEdgeX = faceEdgeLandmark.x * w;
-  const faceEdgeY = faceEdgeLandmark.y * h;
-  const foreheadY = foreheadLandmark.y * h;
-  const chinY = chinLandmark.y * h;
-
-  // Calculate face size for scaling
-  const faceHeight = chinY - foreheadY;
+  // Face dimensions
+  const faceHeight = (chin.y - forehead.y) * h;
+  const faceWidth = Math.abs(rightEdge.x - leftEdge.x) * w;
+  const faceCenterX = (rightEdge.x + leftEdge.x) / 2 * w;
   const baseScale = faceHeight / 280;
 
-  // Calculate head rotation angle from ear positions
-  const rightEarPos = landmarks[LANDMARKS.rightEar];
-  const leftEarPos = landmarks[LANDMARKS.leftEar];
-  const headTilt = Math.atan2(
-    (rightEarPos.y - leftEarPos.y) * h,
-    (rightEarPos.x - leftEarPos.x) * w
-  );
+  // The face edge landmark (234/454) is at the TEMPLE, not the actual ear.
+  // Real ear position:
+  //   X: further outward from face center than the landmark
+  //   Y: about 50-55% down from forehead to chin (nose/mouth level, NOT eye level)
+  const edgeLandmark = isRight ? rightEdge : leftEdge;
+  const edgeX = edgeLandmark.x * w;
 
-  // Calculate head yaw (turn) from nose vs midpoint of ears
-  const earMidX = (rightEarPos.x + leftEarPos.x) / 2 * w;
-  const headYaw = (noseLandmark.x * w - earMidX) / (faceHeight * 0.5);
+  // Direction from face center to this edge
+  const dirFromCenter = edgeX - faceCenterX;
+  const dirSign = dirFromCenter > 0 ? 1 : -1;
 
-  // BTE hearing aid sits BEHIND the ear:
-  // - X: push outward from face (away from nose), past the ear tragion
-  // - Y: centered vertically at ear tragion level (not eye level!)
-  const outwardPush = isRight ? 25 : -25; // push further out from the ear
-  const posX = earX + outwardPush * baseScale + fittingPosX * baseScale * 0.3;
-  // Use ear tragion Y directly — this IS the ear, not the eye
-  const posY = earY - 10 * baseScale + fittingPosY * baseScale * 0.3;
+  // Push X beyond face edge toward actual ear (12% of face width further out)
+  const posX = edgeX + dirSign * faceWidth * 0.12 + fittingPosX * baseScale * 0.3;
+
+  // Ear Y: 52% down from forehead to chin (NOT landmark Y which is at temple/eye level)
+  const earY = (forehead.y + (chin.y - forehead.y) * 0.52) * h;
+  const posY = earY + fittingPosY * baseScale * 0.3;
 
   const scale = baseScale * fittingScale;
 
-  // Determine visibility based on head yaw
+  // Head tilt (roll) from ear-to-ear angle
+  const headTilt = Math.atan2(
+    (rightEdge.y - leftEdge.y) * h,
+    (rightEdge.x - leftEdge.x) * w
+  );
+
+  // Head yaw: nose offset from face center (normalized)
+  // Raw selfie camera: user's right = image left
+  // headYaw < 0 → nose moved left in image → user turned head to THEIR right → right ear hidden
+  // headYaw > 0 → nose moved right in image → user turned head to THEIR left → left ear hidden
+  const headYaw = (nose.x * w - faceCenterX) / (faceWidth * 0.5);
+
   let visibility = 1;
-  if (isRight && headYaw > 0.3) {
-    visibility = Math.max(0, 1 - (headYaw - 0.3) * 2);
-  } else if (!isRight && headYaw < -0.3) {
-    visibility = Math.max(0, 1 - (-headYaw - 0.3) * 2);
+  if (isRight && headYaw < -0.35) {
+    // User turned right → right ear goes behind head → hide right hearing aid
+    visibility = Math.max(0, 1 - (-headYaw - 0.35) * 2.5);
+  } else if (!isRight && headYaw > 0.35) {
+    // User turned left → left ear goes behind head → hide left hearing aid
+    visibility = Math.max(0, 1 - (headYaw - 0.35) * 2.5);
   }
 
   if (visibility <= 0) return;
@@ -2321,8 +2323,11 @@ function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
   ctx.rotate(headTilt);
   ctx.scale(scale, scale);
 
-  // Mirror for left ear
-  if (!isRight) {
+  // Mirror drawing for the ear on the opposite side
+  // Drawing assumes right-ear orientation (hook curves left)
+  // In raw selfie: right ear = left of image (dirFromCenter < 0) → no mirror needed
+  //                left ear = right of image (dirFromCenter > 0) → mirror
+  if (dirFromCenter > 0) {
     ctx.scale(-1, 1);
   }
 
