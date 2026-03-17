@@ -2627,18 +2627,22 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const edgeLandmark = isRight ? rightEdge : leftEdge;
   const landmarkX = edgeLandmark.x * w;
 
-  // Landmark 234/454 = face surface (cheekbone). Real ear = BEYOND the face mesh.
-  // From the screenshots: ear is about 10% of face width further out than the landmark.
+  // From screenshots analysis:
+  // - Landmark 234/454 = sideburn area (구렛나루), NOT the ear
+  // - Real ear is ~18% of face width FURTHER OUT than the landmark
+  // - Real ear Y is at ~68-72% from forehead to chin (ear canal = mouth level)
+  //   (model's ear hook extends upward, so place origin lower to compensate)
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
   const dirFromCenter = landmarkX - faceCenterX;
   const dirSign = dirFromCenter > 0 ? 1 : -1;
 
-  // X: push 10% of face width outward from the face edge toward the actual ear
-  const xOffset = dirSign * faceWidth * 0.10;
+  // X: 18% of face width past the sideburn landmark → reaches the actual ear
+  const xOffset = dirSign * faceWidth * 0.18;
   const imgX = landmarkX + xOffset + fittingPosX * 0.5;
 
-  // Y: ear is at 57% from forehead to chin (nose/mouth level)
-  const earYRatio = isBehindEar ? 0.56 : 0.58;
+  // Y: 68-72% from forehead to chin (the BTE body center needs to be at ear canal
+  // level so the ear hook sits over the top of the ear naturally)
+  const earYRatio = isBehindEar ? 0.68 : 0.72;
   const earY = (forehead.y + (chin.y - forehead.y) * earYRatio) * h;
   const imgY = earY + fittingPosY * 0.5;
 
