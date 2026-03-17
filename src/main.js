@@ -2458,7 +2458,7 @@ function onFaceMeshResults(results) {
     faceDetected = true;
 
     const statusEl = document.getElementById('fitting-status');
-    if (statusEl) statusEl.textContent = '얼굴 인식됨 — AR 피팅 활성화';
+    if (statusEl) statusEl.textContent = '고개를 옆으로 돌려 귀를 보여주세요';
 
     const guideOval = document.querySelector('.fitting-guide-oval');
     if (guideOval) guideOval.style.opacity = '0.2';
@@ -2587,14 +2587,29 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
 
   const isRight = ear === 'right';
 
-  // Visibility: hide ear that faces AWAY from camera
-  // headYaw < 0 = user turned right = right ear hidden
-  // headYaw > 0 = user turned left = left ear hidden
-  let visibility = 1;
-  if (isRight && headYaw < -0.4) {
-    visibility = Math.max(0, 1 - (-headYaw - 0.4) * 3);
-  } else if (!isRight && headYaw > 0.4) {
-    visibility = Math.max(0, 1 - (headYaw - 0.4) * 3);
+  // ========================================
+  // VISIBILITY: Only show when ear is VISIBLE
+  // ========================================
+  // Raw selfie camera (non-mirrored):
+  //   headYaw > 0 → nose moved right in image → user turned to THEIR left
+  //                → user's RIGHT side faces camera → RIGHT ear visible
+  //   headYaw < 0 → nose moved left in image → user turned to THEIR right
+  //                → user's LEFT side faces camera → LEFT ear visible
+  //
+  // FRONTAL (|yaw| < threshold): BOTH ears hidden (ears are on the sides, not visible)
+  // SIDE: Only the ear facing the camera is visible
+
+  const SHOW_THRESHOLD = 0.25;  // start showing when head turned this much
+  const FULL_THRESHOLD = 0.50;  // fully visible at this yaw
+
+  let visibility = 0; // default: hidden
+
+  if (isRight && headYaw > SHOW_THRESHOLD) {
+    // User turned left → right ear faces camera → show right hearing aid
+    visibility = Math.min(1, (headYaw - SHOW_THRESHOLD) / (FULL_THRESHOLD - SHOW_THRESHOLD));
+  } else if (!isRight && headYaw < -SHOW_THRESHOLD) {
+    // User turned right → left ear faces camera → show left hearing aid
+    visibility = Math.min(1, (-headYaw - SHOW_THRESHOLD) / (FULL_THRESHOLD - SHOW_THRESHOLD));
   }
 
   if (!show || visibility <= 0) {
@@ -2603,21 +2618,20 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   }
   model.visible = true;
 
-  // Use the face edge landmark (234/454) as the anchor point
-  // This landmark moves naturally with the head, so the hearing aid tracks it
+  // ========================================
+  // POSITIONING: At the face edge landmark
+  // ========================================
+  // When the ear is visible (head turned), the face edge landmark (234/454)
+  // is at the boundary of the visible face — right where the ear appears.
   const edgeLandmark = isRight ? rightEdge : leftEdge;
-
-  // Use the landmark's ACTUAL coordinates directly
-  // These are already in image space — no need to recalculate Y from forehead/chin
   const landmarkX = edgeLandmark.x * w;
   const landmarkY = edgeLandmark.y * h;
 
-  // Tiny offset to push flush against the face edge (not floating in air)
-  // BTE/RIC: just barely past the edge, ITC/CIC: at the edge
+  // Small nudge: BTE/RIC sits slightly behind the ear (outward from face center)
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
   const dirFromCenter = landmarkX - faceCenterX;
   const dirSign = dirFromCenter > 0 ? 1 : -1;
-  const xNudge = isBehindEar ? dirSign * faceWidth * 0.03 : 0;
+  const xNudge = isBehindEar ? dirSign * faceWidth * 0.02 : 0;
 
   const imgX = landmarkX + xNudge + fittingPosX * 0.5;
   const imgY = landmarkY + fittingPosY * 0.5;
