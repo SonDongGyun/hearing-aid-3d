@@ -2627,23 +2627,16 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const edgeLandmark = isRight ? rightEdge : leftEdge;
   const landmarkX = edgeLandmark.x * w;
 
-  // The ear is OUTSIDE the face mesh — landmark 234/454 is on the face surface.
-  // We must push OUTWARD from the face edge, and MORE so when head is turned further.
+  // Position the hearing aid flush against the face edge — NOT floating outward.
+  // The face edge landmark IS where the ear meets the face. Place model RIGHT HERE.
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
-  const dirFromCenter = landmarkX - faceCenterX;
-  const dirSign = dirFromCenter > 0 ? 1 : -1;
-  const absYaw = Math.abs(headYaw);
 
-  // Dynamic X offset: increases with head turn (ear appears further out when more turned)
-  // Base 8% + up to 14% more based on yaw = total 8~22% of face width
-  const xOffset = faceWidth * (0.08 + absYaw * 0.14);
-  const xNudge = dirSign * xOffset * (isBehindEar ? 1.0 : 0.6);
+  // X: directly at the face edge landmark. Zero or minimal outward push.
+  const imgX = landmarkX + fittingPosX * 0.5;
 
-  // Y: ear is at ~58% from forehead to chin (nose/mouth level, NOT temple)
-  const earYRatio = isBehindEar ? 0.56 : 0.58;
+  // Y: ear canal is at ~57% from forehead to chin
+  const earYRatio = isBehindEar ? 0.55 : 0.57;
   const earY = (forehead.y + (chin.y - forehead.y) * earYRatio) * h;
-
-  const imgX = landmarkX + xNudge + fittingPosX * 0.5;
   const imgY = earY + fittingPosY * 0.5;
 
   // Convert image coords → Three.js world coords
@@ -2652,20 +2645,29 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const worldX = (imgX / w - 0.5) * visibleWidth;
   const worldY = -(imgY / h - 0.5) * visibleHeight;
 
-  model.position.set(worldX, worldY, 0);
+  // Z: push model slightly behind the screen plane so it sits ON the head surface
+  // instead of floating in front. More depth when more turned (ear recedes).
+  const absYaw = Math.abs(headYaw);
+  const zDepth = -0.3 - absYaw * 0.5;
+
+  model.position.set(worldX, worldY, zDepth);
   model.scale.set(
     isRight ? modelScale : -modelScale,
     modelScale,
     modelScale
   );
 
-  // Rotation based on type and head yaw
+  // Rotation: the model must follow the head surface angle.
+  // When head turns, the hearing aid rotates WITH the head (it's attached).
+  // headYaw directly controls Y rotation so it matches the head angle.
   if (fittingType === 'cic' || fittingType === 'itc') {
-    model.rotation.set(0, isRight ? -1.2 : 1.2, -headTilt);
+    model.rotation.set(0, isRight ? -1.0 : 1.0, -headTilt);
   } else {
-    model.rotation.set(0.1, isRight ? -0.8 : 0.8, -headTilt);
+    // BTE/RIC: slight profile angle + follows head yaw
+    model.rotation.set(0, isRight ? -0.6 : 0.6, -headTilt);
   }
-  model.rotation.y += headYaw * 0.5;
+  // Sync rotation with head turn — the hearing aid is ON the head, moves with it
+  model.rotation.y += headYaw * 0.8;
 
   // Animate LED and brand ring
   model.traverse((child) => {
