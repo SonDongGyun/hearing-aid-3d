@@ -31,6 +31,7 @@
       <a href="#features">기술</a>
       <a href="#product">제품</a>
       <a href="#hand-section">체험</a>
+      <a href="#fitting">가상 피팅</a>
       <a href="#contact">상담</a>
     </div>
     <button class="nav-cta">무료 상담</button>
@@ -44,6 +45,7 @@
     <a href="#features" onclick="closeMobileNav()">기술</a>
     <a href="#product" onclick="closeMobileNav()">제품</a>
     <a href="#hand-section" onclick="closeMobileNav()">체험</a>
+    <a href="#fitting" onclick="closeMobileNav()">가상 피팅</a>
     <a href="#contact" onclick="closeMobileNav()">상담</a>
   </div>
 
@@ -159,8 +161,15 @@
         <div class="product-3d-container">
           <!-- Three.js product model renders here -->
           <div class="product-rotate-hint">
-            <span class="desktop-hint">🖐️ 손을 움직여 제품을 회전하세요</span>
-            <span class="mobile-hint">📱 화면을 터치하거나 기기를 기울여 회전하세요</span>
+            <span class="desktop-hint">파츠를 클릭하여 기술을 확인하세요</span>
+            <span class="mobile-hint">파츠를 터치하여 기술을 확인하세요</span>
+          </div>
+        </div>
+        <div class="part-tooltip" id="part-tooltip" style="display:none;">
+          <div class="part-tooltip-inner">
+            <span class="part-tooltip-tag" id="part-tooltip-tag"></span>
+            <h4 id="part-tooltip-title"></h4>
+            <p id="part-tooltip-desc"></p>
           </div>
         </div>
       </div>
@@ -362,6 +371,77 @@
             <div>
               <strong>이준호</strong>
               <span>55세 · 사용 6개월</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Virtual Fitting Section -->
+  <section id="fitting" class="section section-dark">
+    <div class="section-container">
+      <div class="section-header">
+        <span class="section-tag">VIRTUAL FITTING</span>
+        <h2>가상 피팅 체험</h2>
+        <p>카메라로 보청기 착용 모습을 미리 확인해보세요</p>
+      </div>
+      <div class="fitting-layout">
+        <div class="fitting-camera-wrap">
+          <video id="fitting-video" autoplay playsinline muted></video>
+          <canvas id="fitting-canvas"></canvas>
+          <div class="fitting-overlay" id="fitting-overlay">
+            <button class="btn-primary" id="fitting-start-btn">
+              <span>📷</span> 카메라 시작
+            </button>
+            <p class="hand-hint">카메라를 통해 보청기 착용 모습을<br/>미리 확인해보세요</p>
+          </div>
+          <div class="fitting-guide" id="fitting-guide" style="display:none;">
+            <div class="fitting-guide-oval"></div>
+            <p>얼굴을 가이드 안에 맞춰주세요</p>
+          </div>
+          <div class="fitting-controls-overlay" id="fitting-controls-overlay" style="display:none;">
+            <button class="fitting-btn-capture" id="fitting-capture">📸 촬영</button>
+            <button class="fitting-btn-flip" id="fitting-flip">🔄 전환</button>
+            <button class="fitting-btn-stop" id="fitting-stop">✕</button>
+          </div>
+        </div>
+        <div class="fitting-options">
+          <h3>보청기 스타일</h3>
+          <div class="fitting-colors">
+            <button class="fitting-color active" data-color="silver" style="background: linear-gradient(135deg, #d0d5e0, #a8adb8);" title="실버"></button>
+            <button class="fitting-color" data-color="black" style="background: linear-gradient(135deg, #2a2a2e, #1a1a1e);" title="블랙"></button>
+            <button class="fitting-color" data-color="beige" style="background: linear-gradient(135deg, #d4c5a9, #c4b599);" title="베이지"></button>
+            <button class="fitting-color" data-color="rose" style="background: linear-gradient(135deg, #e8b4b4, #d89999);" title="로즈골드"></button>
+          </div>
+          <div class="fitting-size">
+            <h4>착용 위치 조절</h4>
+            <div class="fitting-slider-group">
+              <label>좌우</label>
+              <input type="range" id="fitting-pos-x" min="-50" max="50" value="0" />
+            </div>
+            <div class="fitting-slider-group">
+              <label>상하</label>
+              <input type="range" id="fitting-pos-y" min="-50" max="50" value="0" />
+            </div>
+            <div class="fitting-slider-group">
+              <label>크기</label>
+              <input type="range" id="fitting-scale" min="50" max="150" value="100" />
+            </div>
+          </div>
+          <div class="fitting-ear-select">
+            <h4>착용 귀</h4>
+            <div class="fitting-ear-btns">
+              <button class="fitting-ear-btn active" data-ear="right">오른쪽</button>
+              <button class="fitting-ear-btn" data-ear="left">왼쪽</button>
+              <button class="fitting-ear-btn" data-ear="both">양쪽</button>
+            </div>
+          </div>
+          <div class="fitting-result" id="fitting-result" style="display:none;">
+            <img id="fitting-result-img" />
+            <div class="fitting-result-actions">
+              <button class="btn-primary" id="fitting-download">다운로드</button>
+              <button class="btn-secondary" id="fitting-retry">다시 촬영</button>
             </div>
           </div>
         </div>

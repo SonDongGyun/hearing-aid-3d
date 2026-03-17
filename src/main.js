@@ -1,9 +1,10 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { gsap } from 'gsap';
 
 // ===== GLOBALS =====
 let scene, camera, renderer;
-let hearingAidGroup, particleSystem, soundWaveRings = [];
+let hearingAidGroup, hearingAidParts = {}, particleSystem, soundWaveRings = [];
 let handActive = false;
 let scrollY = 0, targetScrollY = 0;
 const clock = new THREE.Clock();
@@ -24,18 +25,28 @@ function getSharedAudioCtx() {
   return sharedAudioCtx;
 }
 
-function unlockAudio() {
+// Safari-compatible decodeAudioData (callback-based fallback)
+function decodeAudio(ctx, arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    // Safari may not support promise-based decodeAudioData
+    ctx.decodeAudioData(arrayBuffer, resolve, reject);
+  });
+}
+
+async function unlockAudio() {
   if (audioUnlocked) return;
   const ctx = getSharedAudioCtx();
   if (ctx.state === 'suspended') {
-    ctx.resume();
+    try { await ctx.resume(); } catch(e) {}
   }
-  // Play a silent buffer to fully unlock on iOS
-  const buf = ctx.createBuffer(1, 1, 22050);
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(ctx.destination);
-  src.start(0);
+  // iOS requires playing actual audio in gesture context
+  try {
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch(e) {}
   audioUnlocked = true;
 }
 
@@ -95,6 +106,8 @@ function init() {
   setupNoiseCancellation();
   setupHearingTest();
   setupEnvironmentSim();
+  setupPartInteraction();
+  setupVirtualFitting();
 
   // Hide loader
   setTimeout(() => {
@@ -108,8 +121,90 @@ function init() {
 function createHearingAid() {
   hearingAidGroup = new THREE.Group();
   hearingAidGroup.position.set(isMobile ? 5 : 12, isMobile ? 2 : 0, 0);
+  hearingAidGroup.rotation.set(0.3, 0, 0.2);
+  scene.add(hearingAidGroup);
 
-  // Main body - organic shape using lathe geometry
+  const loader = new GLTFLoader();
+  loader.load('/models/hearing-aid.glb', (gltf) => {
+    const model = gltf.scene;
+
+    // Scale to match previous model size (~4 units tall)
+    model.scale.setScalar(1.8);
+
+    // Upgrade all materials to PBR Physical for clearcoat/shine
+    model.traverse((child) => {
+      if (child.isMesh) {
+        // Store reference by name for individual animation
+        hearingAidParts[child.name] = child;
+
+        const oldMat = child.material;
+        if (child.name === 'body' || child.name === 'battery_door') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: oldMat.metalness || 0.4,
+            roughness: oldMat.roughness || 0.2,
+            clearcoat: 1.0,
+            clearcoatRoughness: 0.1,
+            envMapIntensity: 1.5
+          });
+        } else if (child.name === 'brand_ring') {
+          child.material = new THREE.MeshBasicMaterial({
+            color: 0x00c8ff,
+            transparent: true,
+            opacity: 0.85
+          });
+        } else if (child.name === 'led_indicator') {
+          child.material = new THREE.MeshBasicMaterial({
+            color: 0x00ff88,
+            transparent: true,
+            opacity: 0.9
+          });
+        } else if (child.name === 'ear_hook' || child.name === 'sound_tube') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.0,
+            roughness: 0.1,
+            transparent: true,
+            opacity: 0.85,
+            clearcoat: 0.5
+          });
+        } else if (child.name === 'ear_tip') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.0,
+            roughness: 0.6,
+            clearcoat: 0.2
+          });
+        } else if (child.name === 'mic_grille') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.8,
+            roughness: 0.3
+          });
+        }
+      }
+    });
+
+    hearingAidGroup.add(model);
+
+    // Add wireframe overlay for tech aesthetic
+    const wireGeo = new THREE.IcosahedronGeometry(3, 1);
+    const wireMat = new THREE.MeshBasicMaterial({
+      color: 0x00c8ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.05
+    });
+    const wireframe = new THREE.Mesh(wireGeo, wireMat);
+    hearingAidGroup.add(wireframe);
+  }, undefined, (err) => {
+    console.warn('GLB load failed, using fallback geometry:', err);
+    createHearingAidFallback();
+  });
+}
+
+// Fallback if GLB fails to load
+function createHearingAidFallback() {
   const bodyPoints = [];
   for (let i = 0; i < 20; i++) {
     const t = i / 19;
@@ -118,66 +213,240 @@ function createHearingAid() {
   }
   const bodyGeo = new THREE.LatheGeometry(bodyPoints, 32);
   const bodyMat = new THREE.MeshPhysicalMaterial({
-    color: 0xd0d5e0,
-    metalness: 0.6,
-    roughness: 0.15,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.1,
-    envMapIntensity: 1.5
+    color: 0xd0d5e0, metalness: 0.6, roughness: 0.15,
+    clearcoat: 1.0, clearcoatRoughness: 0.1
   });
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.scale.set(0.8, 1, 0.8);
   hearingAidGroup.add(body);
 
-  // Speaker tip
   const tipGeo = new THREE.CylinderGeometry(0.3, 0.5, 1.5, 16);
   const tipMat = new THREE.MeshPhysicalMaterial({
-    color: 0x00c8ff,
-    metalness: 0.8,
-    roughness: 0.1,
-    emissive: 0x003344,
-    emissiveIntensity: 0.5
+    color: 0x00c8ff, metalness: 0.8, roughness: 0.1,
+    emissive: 0x003344, emissiveIntensity: 0.5
   });
   const tip = new THREE.Mesh(tipGeo, tipMat);
   tip.position.set(0, -2.5, 0);
   hearingAidGroup.add(tip);
 
-  // Glowing ring
   const ringGeo = new THREE.TorusGeometry(1.2, 0.08, 16, 64);
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0x00c8ff,
-    transparent: true,
-    opacity: 0.8
-  });
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x00c8ff, transparent: true, opacity: 0.8 });
   const ring = new THREE.Mesh(ringGeo, ringMat);
   ring.position.y = 0.5;
   ring.rotation.x = Math.PI / 2;
   hearingAidGroup.add(ring);
 
-  // LED indicator
   const ledGeo = new THREE.SphereGeometry(0.15, 16, 16);
-  const ledMat = new THREE.MeshBasicMaterial({
-    color: 0x00ff88,
-    transparent: true,
-    opacity: 0.9
-  });
+  const ledMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.9 });
   const led = new THREE.Mesh(ledGeo, ledMat);
   led.position.set(0.8, 1.2, 1);
   hearingAidGroup.add(led);
+}
 
-  // Wireframe overlay
-  const wireGeo = new THREE.IcosahedronGeometry(3, 1);
-  const wireMat = new THREE.MeshBasicMaterial({
-    color: 0x00c8ff,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.05
-  });
-  const wireframe = new THREE.Mesh(wireGeo, wireMat);
-  hearingAidGroup.add(wireframe);
+// ===== PART INTERACTION =====
+const PART_INFO = {
+  body: {
+    tag: 'DESIGN',
+    title: '초경량 하우징',
+    desc: '의료용 티타늄 합금으로 제작된 2.1g 초경량 본체. 인체공학적 곡면 설계로 귀 뒤에 완벽히 밀착됩니다.'
+  },
+  ear_hook: {
+    tag: 'COMFORT',
+    title: '플렉시블 이어훅',
+    desc: '형상기억 합금 와이어로 어떤 귀 형태에도 맞게 자유롭게 조절됩니다. 안경과 함께 착용해도 편안합니다.'
+  },
+  sound_tube: {
+    tag: 'ACOUSTIC',
+    title: '음향 전달 튜브',
+    desc: '의료용 실리콘 튜브로 고음질 사운드를 왜곡 없이 귀 안으로 전달합니다. 항균 코팅 적용.'
+  },
+  ear_tip: {
+    tag: 'FIT',
+    title: '오픈형 이어돔',
+    desc: '3가지 사이즈의 소프트 실리콘 돔. 외이도를 막지 않는 오픈형 설계로 자연스러운 소리를 유지합니다.'
+  },
+  mic_grille: {
+    tag: 'AI NOISE CANCEL',
+    title: '듀얼 마이크 어레이',
+    desc: '전/후면 듀얼 마이크가 360° 소리를 수집. AI가 실시간으로 소음은 제거하고 음성만 증폭합니다.'
+  },
+  button_volume: {
+    tag: 'CONTROL',
+    title: '멀티 펑션 버튼',
+    desc: '볼륨 조절, 프로그램 전환, 전화 받기를 한 버튼으로. 장갑을 끼고도 조작 가능한 촉각 설계.'
+  },
+  led_indicator: {
+    tag: 'STATUS',
+    title: 'LED 상태 표시등',
+    desc: '배터리 잔량, 연결 상태, 충전 상태를 색상으로 직관적으로 알려줍니다.'
+  },
+  battery_door: {
+    tag: 'BATTERY',
+    title: '충전식 배터리',
+    desc: '1회 충전으로 48시간 연속 사용. Qi 무선 충전 호환. 배터리 교체 없이 3년 이상 사용 가능.'
+  },
+  brand_ring: {
+    tag: 'TECH',
+    title: 'SoundClear 시그니처 링',
+    desc: '블루투스 5.3 안테나가 내장된 디자인 요소. 스마트폰, TV와 끊김 없이 연결됩니다.'
+  }
+};
 
-  hearingAidGroup.rotation.set(0.3, 0, 0.2);
-  scene.add(hearingAidGroup);
+let raycaster, mouse;
+let hoveredPart = null;
+let selectedPart = null;
+let originalMaterials = {};
+
+function setupPartInteraction() {
+  raycaster = new THREE.Raycaster();
+  mouse = new THREE.Vector2();
+
+  const canvas = renderer.domElement;
+
+  canvas.addEventListener('mousemove', onPartHover);
+  canvas.addEventListener('click', onPartClick);
+  canvas.addEventListener('touchend', onPartTouch);
+}
+
+function getIntersectedPart(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+
+  // Collect all meshes from hearingAidGroup
+  const meshes = [];
+  if (hearingAidGroup) {
+    hearingAidGroup.traverse((child) => {
+      if (child.isMesh && PART_INFO[child.name]) {
+        meshes.push(child);
+      }
+    });
+  }
+
+  const intersects = raycaster.intersectObjects(meshes, false);
+  if (intersects.length > 0) {
+    return intersects[0].object;
+  }
+  return null;
+}
+
+function onPartHover(e) {
+  const part = getIntersectedPart(e.clientX, e.clientY);
+
+  if (part !== hoveredPart) {
+    // Reset previous hover
+    if (hoveredPart && hoveredPart !== selectedPart) {
+      resetPartMaterial(hoveredPart);
+    }
+
+    hoveredPart = part;
+
+    if (hoveredPart && hoveredPart !== selectedPart) {
+      highlightPart(hoveredPart, 0.3);
+    }
+
+    // Change cursor
+    renderer.domElement.style.cursor = hoveredPart ? 'pointer' : '';
+  }
+
+  // Move tooltip near cursor
+  if (hoveredPart || selectedPart) {
+    const activePart = selectedPart || hoveredPart;
+    const tooltip = document.getElementById('part-tooltip');
+    if (tooltip.style.display !== 'none') {
+      tooltip.style.left = (e.clientX + 20) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    }
+  }
+}
+
+function onPartClick(e) {
+  const part = getIntersectedPart(e.clientX, e.clientY);
+
+  // Reset previous selection
+  if (selectedPart) {
+    resetPartMaterial(selectedPart);
+    selectedPart = null;
+  }
+
+  if (part && PART_INFO[part.name]) {
+    selectedPart = part;
+    highlightPart(part, 0.6);
+    showPartTooltip(part.name, e.clientX, e.clientY);
+  } else {
+    hidePartTooltip();
+  }
+}
+
+function onPartTouch(e) {
+  if (e.changedTouches.length > 0) {
+    const touch = e.changedTouches[0];
+    const part = getIntersectedPart(touch.clientX, touch.clientY);
+
+    if (selectedPart) {
+      resetPartMaterial(selectedPart);
+      selectedPart = null;
+    }
+
+    if (part && PART_INFO[part.name]) {
+      selectedPart = part;
+      highlightPart(part, 0.6);
+      showPartTooltip(part.name, touch.clientX, touch.clientY);
+    } else {
+      hidePartTooltip();
+    }
+  }
+}
+
+function highlightPart(mesh, intensity) {
+  // Store original material if not already stored
+  if (!originalMaterials[mesh.name]) {
+    originalMaterials[mesh.name] = mesh.material.clone();
+  }
+
+  // Add emissive highlight
+  if (mesh.material.emissive) {
+    mesh.material.emissive.setHex(0x00c8ff);
+    mesh.material.emissiveIntensity = intensity;
+  } else {
+    mesh.material = mesh.material.clone();
+    mesh.material.color.lerp(new THREE.Color(0x00c8ff), intensity * 0.5);
+  }
+}
+
+function resetPartMaterial(mesh) {
+  if (originalMaterials[mesh.name]) {
+    mesh.material.copy(originalMaterials[mesh.name]);
+  }
+}
+
+function showPartTooltip(partName, x, y) {
+  const info = PART_INFO[partName];
+  if (!info) return;
+
+  const tooltip = document.getElementById('part-tooltip');
+  document.getElementById('part-tooltip-tag').textContent = info.tag;
+  document.getElementById('part-tooltip-title').textContent = info.title;
+  document.getElementById('part-tooltip-desc').textContent = info.desc;
+
+  // Position tooltip, keep on screen
+  const tipWidth = 280;
+  const tipHeight = 150;
+  let tx = x + 20;
+  let ty = y - 10;
+  if (tx + tipWidth > window.innerWidth) tx = x - tipWidth - 20;
+  if (ty + tipHeight > window.innerHeight) ty = window.innerHeight - tipHeight - 10;
+  if (ty < 10) ty = 10;
+
+  tooltip.style.left = tx + 'px';
+  tooltip.style.top = ty + 'px';
+  tooltip.style.display = 'block';
+}
+
+function hidePartTooltip() {
+  document.getElementById('part-tooltip').style.display = 'none';
 }
 
 // ===== PARTICLE SYSTEM =====
@@ -297,9 +566,15 @@ function animate() {
     hearingAidGroup.scale.setScalar(pulse);
 
     // LED blink
-    const led = hearingAidGroup.children[3];
-    if (led) {
+    const led = hearingAidParts['led_indicator'];
+    if (led && led.material) {
       led.material.opacity = 0.5 + Math.sin(time * 3) * 0.5;
+    }
+
+    // Brand ring glow pulse
+    const ring = hearingAidParts['brand_ring'];
+    if (ring && ring.material) {
+      ring.material.opacity = 0.6 + Math.sin(time * 2) * 0.25;
     }
   }
 
@@ -346,6 +621,11 @@ function setupEvents() {
   });
 
   window.addEventListener('scroll', () => {
+    hidePartTooltip();
+    if (selectedPart) {
+      resetPartMaterial(selectedPart);
+      selectedPart = null;
+    }
     targetScrollY = window.scrollY;
 
     // Nav scroll effect
@@ -525,6 +805,10 @@ let noiseSimNodes = []; // track all audio nodes for cleanup
 let noiseNoiseGainNode = null; // gain for noise sources (to modulate on filter toggle)
 let noiseVoiceGainNode = null; // gain for voice sources
 let noiseBandpassFilter = null; // for mic mode
+let noiseMicPeakFilter = null; // peaking EQ for mic clarity
+let noiseVoicePeak1k = null; // peaking EQ at 1kHz for voice warmth
+let noiseVoicePeak2_5k = null; // peaking EQ at 2.5kHz for consonant clarity
+let noiseVoiceCompressor = null; // WDRC compressor for voice path
 
 function setupNoiseCancellation() {
   const startBtn = document.getElementById('start-mic');
@@ -549,26 +833,50 @@ function applyNoiseFilter() {
   const t = noiseAudioCtx.currentTime;
 
   if (noiseDemoMode === 'simulated') {
-    // WAV-based: modulate noise vs voice gain
+    // WAV-based: modulate noise vs voice gain with dramatic difference
     if (noiseNoiseGainNode) {
       noiseNoiseGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 0.02 : 1.0, t + 0.3
+        noiseFilterEnabled ? 0.05 : 1.0, t + 0.3
       );
     }
     if (noiseVoiceGainNode) {
       noiseVoiceGainNode.gain.linearRampToValueAtTime(
-        noiseFilterEnabled ? 2.5 : 1.0, t + 0.3
+        noiseFilterEnabled ? 2.0 : 1.0, t + 0.3
       );
     }
-  } else if (noiseDemoMode === 'mic' && noiseBandpassFilter) {
-    // Mic mode: toggle bandpass filter
-    if (noiseFilterEnabled) {
-      noiseBandpassFilter.frequency.linearRampToValueAtTime(1500, t + 0.2);
-      noiseBandpassFilter.Q.linearRampToValueAtTime(0.5, t + 0.2);
-    } else {
-      // Wide open = essentially no filter
-      noiseBandpassFilter.frequency.linearRampToValueAtTime(5000, t + 0.2);
-      noiseBandpassFilter.Q.linearRampToValueAtTime(0.01, t + 0.2);
+    // Speech enhancement EQ (peaking filters on voice path)
+    if (noiseVoicePeak1k) {
+      noiseVoicePeak1k.gain.linearRampToValueAtTime(
+        noiseFilterEnabled ? 3 : 0, t + 0.3
+      );
+    }
+    if (noiseVoicePeak2_5k) {
+      noiseVoicePeak2_5k.gain.linearRampToValueAtTime(
+        noiseFilterEnabled ? 6 : 0, t + 0.3
+      );
+    }
+    // Compressor on voice path (threshold change)
+    if (noiseVoiceCompressor) {
+      noiseVoiceCompressor.threshold.linearRampToValueAtTime(
+        noiseFilterEnabled ? -20 : 0, t + 0.3
+      );
+    }
+  } else if (noiseDemoMode === 'mic') {
+    // Mic mode: wider bandpass + clarity boost
+    if (noiseBandpassFilter) {
+      if (noiseFilterEnabled) {
+        noiseBandpassFilter.frequency.linearRampToValueAtTime(1200, t + 0.2);
+        noiseBandpassFilter.Q.linearRampToValueAtTime(0.35, t + 0.2);
+      } else {
+        // Wide open = essentially no filter
+        noiseBandpassFilter.frequency.linearRampToValueAtTime(5000, t + 0.2);
+        noiseBandpassFilter.Q.linearRampToValueAtTime(0.01, t + 0.2);
+      }
+    }
+    if (noiseMicPeakFilter) {
+      noiseMicPeakFilter.gain.linearRampToValueAtTime(
+        noiseFilterEnabled ? 6 : 0, t + 0.2
+      );
     }
   }
 }
@@ -595,6 +903,10 @@ function stopNoiseCancellation() {
   noiseNoiseGainNode = null;
   noiseVoiceGainNode = null;
   noiseBandpassFilter = null;
+  noiseMicPeakFilter = null;
+  noiseVoicePeak1k = null;
+  noiseVoicePeak2_5k = null;
+  noiseVoiceCompressor = null;
 
   // Don't close shared audio context, just release reference
   noiseAudioCtx = null;
@@ -633,6 +945,10 @@ async function startNoiseMic() {
     return;
   }
 
+  // iOS-safe: create/resume AudioContext synchronously in gesture context
+  noiseAudioCtx = getSharedAudioCtx();
+  noiseAudioCtx.resume(); // kick off synchronously, don't await
+
   try {
     noiseMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
@@ -657,7 +973,7 @@ async function startNoiseMic() {
   document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'mic';
 
-  noiseAudioCtx = getSharedAudioCtx();
+  // Ensure resumed after async getUserMedia
   if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
   const source = noiseAudioCtx.createMediaStreamSource(noiseMicStream);
 
@@ -667,12 +983,20 @@ async function startNoiseMic() {
   noiseBandpassFilter.frequency.value = 5000; // wide = no filter initially
   noiseBandpassFilter.Q.value = 0.01;
 
+  // Peaking EQ at 2.5kHz for consonant clarity when filter is ON
+  noiseMicPeakFilter = noiseAudioCtx.createBiquadFilter();
+  noiseMicPeakFilter.type = 'peaking';
+  noiseMicPeakFilter.frequency.value = 2500;
+  noiseMicPeakFilter.Q.value = 1.0;
+  noiseMicPeakFilter.gain.value = 0; // starts flat
+
   noiseAnalyser = noiseAudioCtx.createAnalyser();
   noiseAnalyser.fftSize = 2048;
   noiseAnalyser.smoothingTimeConstant = 0.8;
 
   source.connect(noiseBandpassFilter);
-  noiseBandpassFilter.connect(noiseAnalyser);
+  noiseBandpassFilter.connect(noiseMicPeakFilter);
+  noiseMicPeakFilter.connect(noiseAnalyser);
 
   noiseDataArray = new Uint8Array(noiseAnalyser.frequencyBinCount);
 
@@ -692,15 +1016,19 @@ async function startSimulatedNoise() {
   document.getElementById('noise-stop-wrap').style.display = 'block';
   noiseDemoMode = 'simulated';
 
+  // iOS-safe: create/resume AudioContext synchronously in gesture context
   noiseAudioCtx = getSharedAudioCtx();
-  if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
+  noiseAudioCtx.resume(); // kick off synchronously, don't await
   const ctx = noiseAudioCtx;
 
   // Load cafe audio sample (realistic ambient with voices)
   try {
     const response = await fetch('/audio/cafe.wav');
     const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+    // Ensure resumed before decoding
+    if (ctx.state === 'suspended') await ctx.resume();
+    const audioBuffer = await decodeAudio(ctx, arrayBuffer);
 
     // Play the full mix as a loop
     const fullSource = ctx.createBufferSource();
@@ -708,40 +1036,79 @@ async function startSimulatedNoise() {
     fullSource.loop = true;
     noiseSimNodes.push(fullSource);
 
-    // === NOISE PATH: lowpass + highpass to isolate non-voice ===
+    // === NOISE PATH: multi-stage filtering for aggressive noise reduction ===
+    // Low rumble path
     const noiseLP = ctx.createBiquadFilter();
     noiseLP.type = 'lowpass';
-    noiseLP.frequency.value = 200;
+    noiseLP.frequency.value = 250;
     noiseLP.Q.value = 0.7;
 
+    // High hiss path
     const noiseHP = ctx.createBiquadFilter();
     noiseHP.type = 'highpass';
-    noiseHP.frequency.value = 4000;
+    noiseHP.frequency.value = 3500;
     noiseHP.Q.value = 0.7;
+
+    // Notch filter at common noise frequency
+    const noiseNotch = ctx.createBiquadFilter();
+    noiseNotch.type = 'notch';
+    noiseNotch.frequency.value = 180;
+    noiseNotch.Q.value = 2.0;
 
     const noiseGain = ctx.createGain();
     noiseGain.gain.value = 1.0;
     noiseNoiseGainNode = noiseGain;
 
-    // Route: source → lowpass → noiseGain (low rumble)
+    // Route: source → lowpass → notch → noiseGain (low rumble)
     //        source → highpass → noiseGain (high noise)
     fullSource.connect(noiseLP);
-    noiseLP.connect(noiseGain);
+    noiseLP.connect(noiseNotch);
+    noiseNotch.connect(noiseGain);
     fullSource.connect(noiseHP);
     noiseHP.connect(noiseGain);
 
-    // === VOICE PATH: wider bandpass to capture more speech ===
+    // === VOICE PATH: speech enhancement chain ===
+    // Wider bandpass 250Hz-4000Hz
     const voiceBP = ctx.createBiquadFilter();
     voiceBP.type = 'bandpass';
     voiceBP.frequency.value = 1000;
-    voiceBP.Q.value = 0.25;
+    voiceBP.Q.value = 0.2; // wider Q for 250-4000Hz coverage
+
+    // Peaking EQ at 1kHz (+3dB) - vowel warmth
+    const voicePeak1k = ctx.createBiquadFilter();
+    voicePeak1k.type = 'peaking';
+    voicePeak1k.frequency.value = 1000;
+    voicePeak1k.Q.value = 1.0;
+    voicePeak1k.gain.value = 0; // starts flat, activated by applyNoiseFilter
+    noiseVoicePeak1k = voicePeak1k;
+
+    // Peaking EQ at 2.5kHz (+6dB) - consonant clarity
+    const voicePeak2_5k = ctx.createBiquadFilter();
+    voicePeak2_5k.type = 'peaking';
+    voicePeak2_5k.frequency.value = 2500;
+    voicePeak2_5k.Q.value = 1.0;
+    voicePeak2_5k.gain.value = 0; // starts flat
+    noiseVoicePeak2_5k = voicePeak2_5k;
+
+    // WDRC compressor for voice
+    const voiceCompressor = ctx.createDynamicsCompressor();
+    voiceCompressor.threshold.value = 0; // starts inactive
+    voiceCompressor.ratio.value = 3;
+    voiceCompressor.attack.value = 0.005;
+    voiceCompressor.release.value = 0.05;
+    voiceCompressor.knee.value = 6;
+    noiseVoiceCompressor = voiceCompressor;
 
     const voiceGain = ctx.createGain();
     voiceGain.gain.value = 1.0;
     noiseVoiceGainNode = voiceGain;
 
+    // Chain: source → bandpass → peak1k → peak2.5k → compressor → voiceGain
     fullSource.connect(voiceBP);
-    voiceBP.connect(voiceGain);
+    voiceBP.connect(voicePeak1k);
+    voicePeak1k.connect(voicePeak2_5k);
+    voicePeak2_5k.connect(voiceCompressor);
+    voiceCompressor.connect(voiceGain);
 
     // === MIX & ANALYSE ===
     noiseAnalyser = ctx.createAnalyser();
@@ -825,16 +1192,19 @@ function drawNoiseVisualization(canvas) {
         const isVoice = i >= voiceLow && i <= voiceHigh;
         let val = noiseDataArray[i] / 255;
 
-        // Simulate noise cancellation: suppress non-voice, boost voice
+        // Dramatic noise cancellation visualization
         if (!isVoice) {
-          val *= 0.05; // Heavy suppression of non-voice
+          val *= 0.03; // Near-zero noise bars (97% reduction)
         } else {
-          val = Math.min(1, val * 1.3); // Slight boost to voice
+          val = Math.min(1, val * 1.5); // Noticeable boost to voice
         }
 
         const barH = val * h * 0.8;
         const x = i * barWidth;
-        ctx.fillStyle = `rgba(123, 97, 255, ${0.4 + val * 0.6})`;
+        // Voice bars in bright blue, noise remnants in dim purple
+        ctx.fillStyle = isVoice
+          ? `rgba(100, 180, 255, ${0.5 + val * 0.5})`
+          : `rgba(123, 97, 255, ${0.2 + val * 0.3})`;
         ctx.fillRect(x, h / 2, Math.max(barWidth - 1, 1), barH / 2);
       }
     } else {
@@ -992,10 +1362,11 @@ function setupHearingTest() {
 function playTone(freq, volume) {
   stopTone();
 
+  // iOS-safe: create/resume AudioContext synchronously in gesture context
   if (!hearingAudioCtx) {
     hearingAudioCtx = getSharedAudioCtx();
   }
-  if (hearingAudioCtx.state === 'suspended') hearingAudioCtx.resume();
+  hearingAudioCtx.resume(); // kick off synchronously
 
   const osc = hearingAudioCtx.createOscillator();
   const gain = hearingAudioCtx.createGain();
@@ -1329,62 +1700,110 @@ const envAudioBuffers = {}; // cached decoded audio buffers
 
 async function loadEnvAudioBuffer(envKey) {
   if (envAudioBuffers[envKey]) return envAudioBuffers[envKey];
-  const response = await fetch(`/audio/${envKey}.wav`);
-  const arrayBuffer = await response.arrayBuffer();
-  if (!envAudioCtx) {
-    envAudioCtx = getSharedAudioCtx();
+  try {
+    const response = await fetch(`/audio/${envKey}.wav`);
+    const arrayBuffer = await response.arrayBuffer();
+    if (!envAudioCtx) {
+      envAudioCtx = getSharedAudioCtx();
+    }
+    envAudioBuffers[envKey] = await decodeAudio(envAudioCtx, arrayBuffer);
+    return envAudioBuffers[envKey];
+  } catch (err) {
+    console.error(`Failed to load audio for ${envKey}:`, err);
+    throw err;
   }
-  envAudioBuffers[envKey] = await envAudioCtx.decodeAudioData(arrayBuffer);
-  return envAudioBuffers[envKey];
 }
 
 async function buildEnvAudio(envKey) {
   stopEnvAudio();
 
+  // iOS-safe: create/resume AudioContext synchronously in gesture context
   if (!envAudioCtx) {
     envAudioCtx = getSharedAudioCtx();
   }
-  if (envAudioCtx.state === 'suspended') await envAudioCtx.resume();
+  envAudioCtx.resume(); // kick off synchronously, don't await
   const ctx = envAudioCtx;
 
   try {
     const buffer = await loadEnvAudioBuffer(envKey);
+
+    // Ensure resumed after async fetch
+    if (ctx.state === 'suspended') await ctx.resume();
 
     // Play the WAV file on loop
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.loop = true;
 
-    // === NOISE PATH: frequencies outside voice band ===
+    // === NOISE PATH: hearing loss simulation + noise isolation ===
+    // Lowpass at 250Hz to catch rumble
     const noiseLP = ctx.createBiquadFilter();
     noiseLP.type = 'lowpass';
-    noiseLP.frequency.value = 200;
+    noiseLP.frequency.value = 250;
     noiseLP.Q.value = 0.7;
 
+    // Highpass at 3500Hz to catch hiss
     const noiseHP = ctx.createBiquadFilter();
     noiseHP.type = 'highpass';
-    noiseHP.frequency.value = 4000;
+    noiseHP.frequency.value = 3500;
     noiseHP.Q.value = 0.7;
+
+    // Hearing loss simulation filter (lowpass at 2000Hz when HA is OFF)
+    // Simulates age-related high-frequency hearing loss
+    const hearingLossLP = ctx.createBiquadFilter();
+    hearingLossLP.type = 'lowpass';
+    hearingLossLP.frequency.value = 2000; // starts with hearing loss active
+    hearingLossLP.Q.value = 0.5;
 
     const noiseGain = ctx.createGain();
     noiseGain.gain.value = 1.0;
 
-    source.connect(noiseLP);
+    // Route: source → hearingLossLP → noiseLP → noiseGain (low rumble with hearing loss)
+    //        source → hearingLossLP → noiseHP → noiseGain (high noise with hearing loss)
+    source.connect(hearingLossLP);
+    hearingLossLP.connect(noiseLP);
     noiseLP.connect(noiseGain);
-    source.connect(noiseHP);
+    hearingLossLP.connect(noiseHP);
     noiseHP.connect(noiseGain);
 
-    // === VOICE PATH: wider speech band ===
+    // === VOICE PATH: speech enhancement chain ===
+    // Wider bandpass 250Hz-4000Hz
     const voiceBP = ctx.createBiquadFilter();
     voiceBP.type = 'bandpass';
     voiceBP.frequency.value = 1000;
-    voiceBP.Q.value = 0.25;
+    voiceBP.Q.value = 0.2;
+
+    // Peaking EQ at 1kHz - vowel warmth (inactive by default)
+    const voicePeak1k = ctx.createBiquadFilter();
+    voicePeak1k.type = 'peaking';
+    voicePeak1k.frequency.value = 1000;
+    voicePeak1k.Q.value = 1.0;
+    voicePeak1k.gain.value = 0;
+
+    // Peaking EQ at 2.5kHz - consonant clarity (inactive by default)
+    const voicePeak2_5k = ctx.createBiquadFilter();
+    voicePeak2_5k.type = 'peaking';
+    voicePeak2_5k.frequency.value = 2500;
+    voicePeak2_5k.Q.value = 1.0;
+    voicePeak2_5k.gain.value = 0;
+
+    // WDRC compressor (inactive by default)
+    const voiceCompressor = ctx.createDynamicsCompressor();
+    voiceCompressor.threshold.value = 0;
+    voiceCompressor.ratio.value = 3;
+    voiceCompressor.attack.value = 0.005;
+    voiceCompressor.release.value = 0.05;
+    voiceCompressor.knee.value = 6;
 
     const voiceGain = ctx.createGain();
     voiceGain.gain.value = 1.0;
 
+    // Chain: source → bandpass → peak1k → peak2.5k → compressor → voiceGain
     source.connect(voiceBP);
-    voiceBP.connect(voiceGain);
+    voiceBP.connect(voicePeak1k);
+    voicePeak1k.connect(voicePeak2_5k);
+    voicePeak2_5k.connect(voiceCompressor);
+    voiceCompressor.connect(voiceGain);
 
     // === OUTPUT ===
     const masterGain = ctx.createGain();
@@ -1400,13 +1819,17 @@ async function buildEnvAudio(envKey) {
       gain: noiseGain,
       isVoice: false,
       baseGain: 1.0,
-      sources: [source]
+      sources: [source],
+      hearingLossLP: hearingLossLP
     });
     envAudioNodes.push({
       gain: voiceGain,
       isVoice: true,
       baseGain: 1.0,
-      sources: []
+      sources: [],
+      voicePeak1k: voicePeak1k,
+      voicePeak2_5k: voicePeak2_5k,
+      voiceCompressor: voiceCompressor
     });
 
     envIsPlaying = true;
@@ -1418,16 +1841,62 @@ async function buildEnvAudio(envKey) {
 
 function updateEnvAudioGains() {
   if (!envAudioCtx || !envIsPlaying) return;
+  const t = envAudioCtx.currentTime;
+
   envAudioNodes.forEach(nodes => {
     let targetGain = nodes.baseGain;
+
     if (envHAEnabled) {
+      // === HEARING AID ON: clear speech, suppressed noise ===
       if (nodes.isVoice) {
-        targetGain = nodes.baseGain * 2.5; // Boost voice significantly
+        targetGain = nodes.baseGain * 2.0; // Boost voice (not 2.5 to avoid distortion)
+
+        // Activate speech enhancement EQ
+        if (nodes.voicePeak1k) {
+          nodes.voicePeak1k.gain.linearRampToValueAtTime(3, t + 0.3); // +3dB vowel warmth
+        }
+        if (nodes.voicePeak2_5k) {
+          nodes.voicePeak2_5k.gain.linearRampToValueAtTime(6, t + 0.3); // +6dB consonant clarity
+        }
+        // Activate WDRC compressor
+        if (nodes.voiceCompressor) {
+          nodes.voiceCompressor.threshold.linearRampToValueAtTime(-20, t + 0.3);
+        }
       } else {
-        targetGain = nodes.baseGain * 0.03; // Suppress noise heavily
+        targetGain = nodes.baseGain * 0.05; // 95% noise reduction
+
+        // Bypass hearing loss filter (open up frequency range)
+        if (nodes.hearingLossLP) {
+          nodes.hearingLossLP.frequency.linearRampToValueAtTime(20000, t + 0.3);
+        }
+      }
+    } else {
+      // === HEARING AID OFF: simulate hearing loss ===
+      if (nodes.isVoice) {
+        targetGain = nodes.baseGain; // normal voice gain
+
+        // Deactivate speech enhancement EQ
+        if (nodes.voicePeak1k) {
+          nodes.voicePeak1k.gain.linearRampToValueAtTime(0, t + 0.3);
+        }
+        if (nodes.voicePeak2_5k) {
+          nodes.voicePeak2_5k.gain.linearRampToValueAtTime(0, t + 0.3);
+        }
+        // Deactivate compressor
+        if (nodes.voiceCompressor) {
+          nodes.voiceCompressor.threshold.linearRampToValueAtTime(0, t + 0.3);
+        }
+      } else {
+        targetGain = nodes.baseGain; // normal noise gain
+
+        // Apply hearing loss filter (lowpass at 2000Hz)
+        if (nodes.hearingLossLP) {
+          nodes.hearingLossLP.frequency.linearRampToValueAtTime(2000, t + 0.3);
+        }
       }
     }
-    nodes.gain.gain.linearRampToValueAtTime(targetGain, envAudioCtx.currentTime + 0.3);
+
+    nodes.gain.gain.linearRampToValueAtTime(targetGain, t + 0.3);
   });
 }
 
@@ -1626,6 +2095,323 @@ function drawEnvironmentSim() {
   }
 
   envAnimFrame = requestAnimationFrame(drawEnvironmentSim);
+}
+
+// ======================================================
+// 4. VIRTUAL FITTING
+// ======================================================
+let fittingStream = null;
+let fittingVideo = null;
+let fittingCanvas = null;
+let fittingCtx = null;
+let fittingAnimFrame = null;
+let fittingFacingMode = 'user';
+let fittingColor = 'silver';
+let fittingEar = 'right';
+let fittingPosX = 0, fittingPosY = 0, fittingScale = 1;
+
+const FITTING_COLORS = {
+  silver: { body: '#d0d5e0', hook: '#c8cdd8', ring: '#00c8ff' },
+  black: { body: '#2a2a2e', hook: '#222226', ring: '#00c8ff' },
+  beige: { body: '#d4c5a9', hook: '#c4b599', ring: '#00c8ff' },
+  rose: { body: '#e8b4b4', hook: '#d89999', ring: '#ffaacc' }
+};
+
+function setupVirtualFitting() {
+  fittingVideo = document.getElementById('fitting-video');
+  fittingCanvas = document.getElementById('fitting-canvas');
+  fittingCtx = fittingCanvas.getContext('2d');
+
+  // Start button
+  document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
+
+  // Stop button
+  document.getElementById('fitting-stop').addEventListener('click', stopFitting);
+
+  // Flip camera
+  document.getElementById('fitting-flip').addEventListener('click', () => {
+    fittingFacingMode = fittingFacingMode === 'user' ? 'environment' : 'user';
+    if (fittingStream) {
+      stopFittingCamera();
+      startFittingCamera();
+    }
+  });
+
+  // Capture button
+  document.getElementById('fitting-capture').addEventListener('click', captureFitting);
+
+  // Color selection
+  document.querySelectorAll('.fitting-color').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fitting-color').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      fittingColor = btn.dataset.color;
+    });
+  });
+
+  // Ear selection
+  document.querySelectorAll('.fitting-ear-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.fitting-ear-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      fittingEar = btn.dataset.ear;
+    });
+  });
+
+  // Position/scale sliders
+  document.getElementById('fitting-pos-x').addEventListener('input', (e) => {
+    fittingPosX = parseInt(e.target.value);
+  });
+  document.getElementById('fitting-pos-y').addEventListener('input', (e) => {
+    fittingPosY = parseInt(e.target.value);
+  });
+  document.getElementById('fitting-scale').addEventListener('input', (e) => {
+    fittingScale = parseInt(e.target.value) / 100;
+  });
+
+  // Download button
+  document.getElementById('fitting-download').addEventListener('click', downloadFittingImage);
+
+  // Retry button
+  document.getElementById('fitting-retry').addEventListener('click', () => {
+    document.getElementById('fitting-result').style.display = 'none';
+    startFitting();
+  });
+}
+
+async function startFitting() {
+  const overlay = document.getElementById('fitting-overlay');
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    overlay.innerHTML = `
+      <p style="color:#ff6666;">이 브라우저에서 카메라를 사용할 수 없습니다.</p>
+      <p class="hand-hint">HTTPS 환경에서 접속해주세요.</p>
+    `;
+    return;
+  }
+
+  try {
+    await startFittingCamera();
+    overlay.classList.add('hidden');
+    document.getElementById('fitting-guide').style.display = 'flex';
+    document.getElementById('fitting-controls-overlay').style.display = 'flex';
+    drawFittingOverlay();
+  } catch (err) {
+    console.warn('Camera error:', err);
+    overlay.innerHTML = `
+      <p style="color:#ff6666;">카메라 접근이 거부되었습니다.</p>
+      <p class="hand-hint">브라우저 설정에서 카메라 권한을 허용해주세요.</p>
+    `;
+  }
+}
+
+async function startFittingCamera() {
+  fittingStream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: fittingFacingMode,
+      width: { ideal: 640 },
+      height: { ideal: 480 }
+    }
+  });
+  fittingVideo.srcObject = fittingStream;
+  await fittingVideo.play();
+
+  // Set canvas size to match video
+  fittingCanvas.width = fittingVideo.videoWidth || 640;
+  fittingCanvas.height = fittingVideo.videoHeight || 480;
+}
+
+function stopFittingCamera() {
+  if (fittingStream) {
+    fittingStream.getTracks().forEach(t => t.stop());
+    fittingStream = null;
+  }
+}
+
+function stopFitting() {
+  if (fittingAnimFrame) {
+    cancelAnimationFrame(fittingAnimFrame);
+    fittingAnimFrame = null;
+  }
+  stopFittingCamera();
+  fittingVideo.srcObject = null;
+
+  document.getElementById('fitting-overlay').classList.remove('hidden');
+  document.getElementById('fitting-guide').style.display = 'none';
+  document.getElementById('fitting-controls-overlay').style.display = 'none';
+}
+
+function drawFittingOverlay() {
+  if (!fittingStream) return;
+
+  const ctx = fittingCtx;
+  const w = fittingCanvas.width;
+  const h = fittingCanvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Draw hearing aid overlay(s)
+  const colors = FITTING_COLORS[fittingColor];
+  const time = performance.now() * 0.001;
+
+  if (fittingEar === 'right' || fittingEar === 'both') {
+    drawHearingAidOverlay(ctx, w, h, 'right', colors, time);
+  }
+  if (fittingEar === 'left' || fittingEar === 'both') {
+    drawHearingAidOverlay(ctx, w, h, 'left', colors, time);
+  }
+
+  fittingAnimFrame = requestAnimationFrame(drawFittingOverlay);
+}
+
+function drawHearingAidOverlay(ctx, w, h, ear, colors, time) {
+  ctx.save();
+
+  // Base position: ear area (estimated from typical face position in selfie)
+  // For 'user' (selfie) camera, right ear appears on LEFT side of screen
+  const isSelfie = fittingFacingMode === 'user';
+  const isRight = ear === 'right';
+  const screenSide = (isSelfie ? !isRight : isRight);
+
+  const baseX = screenSide ? w * 0.78 : w * 0.22;
+  const baseY = h * 0.38;
+
+  // Apply user adjustments
+  const posX = baseX + fittingPosX * (w / 500);
+  const posY = baseY + fittingPosY * (h / 500);
+  const scale = fittingScale * (h / 500);
+
+  ctx.translate(posX, posY);
+  ctx.scale(scale, scale);
+
+  // Mirror for left ear
+  if (!screenSide) {
+    ctx.scale(-1, 1);
+  }
+
+  // Draw BTE hearing aid shape
+  // Main body (behind ear)
+  ctx.beginPath();
+  ctx.moveTo(0, -30);
+  ctx.bezierCurveTo(12, -32, 18, -20, 18, -5);
+  ctx.bezierCurveTo(18, 15, 14, 28, 8, 35);
+  ctx.bezierCurveTo(4, 40, -4, 40, -8, 35);
+  ctx.bezierCurveTo(-14, 28, -18, 15, -18, -5);
+  ctx.bezierCurveTo(-18, -20, -12, -32, 0, -30);
+  ctx.closePath();
+
+  // Body gradient
+  const bodyGrad = ctx.createLinearGradient(-18, -30, 18, 40);
+  bodyGrad.addColorStop(0, colors.body);
+  bodyGrad.addColorStop(0.5, colors.body);
+  bodyGrad.addColorStop(1, shadeColor(colors.body, -20));
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+
+  // Body border (subtle)
+  ctx.strokeStyle = shadeColor(colors.body, -30);
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Brand ring (glowing accent)
+  ctx.beginPath();
+  ctx.ellipse(0, 2, 14, 2.5, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = colors.ring;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = colors.ring;
+  ctx.shadowBlur = 6 + Math.sin(time * 2) * 3;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // LED indicator
+  const ledGlow = 0.5 + Math.sin(time * 3) * 0.5;
+  ctx.beginPath();
+  ctx.arc(8, -18, 2, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(0, 255, 136, ${ledGlow})`;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 8 * ledGlow;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Ear hook
+  ctx.beginPath();
+  ctx.moveTo(0, -30);
+  ctx.bezierCurveTo(-5, -42, -20, -48, -30, -40);
+  ctx.bezierCurveTo(-38, -34, -42, -20, -38, -8);
+  ctx.strokeStyle = colors.hook;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Sound tube
+  ctx.beginPath();
+  ctx.moveTo(-38, -8);
+  ctx.bezierCurveTo(-36, 5, -32, 15, -28, 22);
+  ctx.strokeStyle = colors.hook;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Ear tip (dome)
+  ctx.beginPath();
+  ctx.ellipse(-28, 24, 6, 8, -0.2, 0, Math.PI * 2);
+  const tipGrad = ctx.createRadialGradient(-28, 24, 0, -28, 24, 8);
+  tipGrad.addColorStop(0, 'rgba(200, 200, 195, 0.8)');
+  tipGrad.addColorStop(1, 'rgba(180, 180, 175, 0.6)');
+  ctx.fillStyle = tipGrad;
+  ctx.fill();
+
+  // Mic grille dots
+  ctx.fillStyle = shadeColor(colors.body, -40);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 2; j++) {
+      ctx.beginPath();
+      ctx.arc(-3 + j * 6, -24 + i * 3, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+// Helper to darken/lighten hex color
+function shadeColor(color, percent) {
+  const num = parseInt(color.replace('#', ''), 16);
+  const amt = Math.round(2.55 * percent);
+  const R = Math.min(255, Math.max(0, (num >> 16) + amt));
+  const G = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
+  const B = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
+  return `rgb(${R},${G},${B})`;
+}
+
+function captureFitting() {
+  // Create a combined canvas with video + overlay
+  const captureCanvas = document.createElement('canvas');
+  captureCanvas.width = fittingCanvas.width;
+  captureCanvas.height = fittingCanvas.height;
+  const captureCtx = captureCanvas.getContext('2d');
+
+  // Draw video frame
+  captureCtx.drawImage(fittingVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+
+  // Draw overlay
+  captureCtx.drawImage(fittingCanvas, 0, 0);
+
+  // Show result
+  const resultDiv = document.getElementById('fitting-result');
+  const resultImg = document.getElementById('fitting-result-img');
+  resultImg.src = captureCanvas.toDataURL('image/png');
+  resultDiv.style.display = 'block';
+
+  // Pause camera to save resources
+  stopFitting();
+}
+
+function downloadFittingImage() {
+  const img = document.getElementById('fitting-result-img');
+  const link = document.createElement('a');
+  link.download = 'soundclear-fitting.png';
+  link.href = img.src;
+  link.click();
 }
 
 // ===== START =====
