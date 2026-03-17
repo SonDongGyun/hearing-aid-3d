@@ -2627,14 +2627,20 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const edgeLandmark = isRight ? rightEdge : leftEdge;
   const landmarkX = edgeLandmark.x * w;
 
-  // X: use face edge landmark directly (+ tiny nudge for BTE)
+  // The ear is OUTSIDE the face mesh — landmark 234/454 is on the face surface.
+  // We must push OUTWARD from the face edge, and MORE so when head is turned further.
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
   const dirFromCenter = landmarkX - faceCenterX;
   const dirSign = dirFromCenter > 0 ? 1 : -1;
-  const xNudge = isBehindEar ? dirSign * faceWidth * 0.02 : 0;
+  const absYaw = Math.abs(headYaw);
 
-  // Y: calculate from face proportions — ear is at 58% from forehead to chin
-  const earYRatio = isBehindEar ? 0.55 : 0.58; // BTE slightly higher, ITC/CIC at ear canal
+  // Dynamic X offset: increases with head turn (ear appears further out when more turned)
+  // Base 8% + up to 14% more based on yaw = total 8~22% of face width
+  const xOffset = faceWidth * (0.08 + absYaw * 0.14);
+  const xNudge = dirSign * xOffset * (isBehindEar ? 1.0 : 0.6);
+
+  // Y: ear is at ~58% from forehead to chin (nose/mouth level, NOT temple)
+  const earYRatio = isBehindEar ? 0.56 : 0.58;
   const earY = (forehead.y + (chin.y - forehead.y) * earYRatio) * h;
 
   const imgX = landmarkX + xNudge + fittingPosX * 0.5;
