@@ -2627,15 +2627,18 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const edgeLandmark = isRight ? rightEdge : leftEdge;
   const landmarkX = edgeLandmark.x * w;
 
-  // Position the hearing aid flush against the face edge — NOT floating outward.
-  // The face edge landmark IS where the ear meets the face. Place model RIGHT HERE.
+  // Landmark 234/454 = face surface (cheekbone). Real ear = BEYOND the face mesh.
+  // From the screenshots: ear is about 10% of face width further out than the landmark.
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
+  const dirFromCenter = landmarkX - faceCenterX;
+  const dirSign = dirFromCenter > 0 ? 1 : -1;
 
-  // X: directly at the face edge landmark. Zero or minimal outward push.
-  const imgX = landmarkX + fittingPosX * 0.5;
+  // X: push 10% of face width outward from the face edge toward the actual ear
+  const xOffset = dirSign * faceWidth * 0.10;
+  const imgX = landmarkX + xOffset + fittingPosX * 0.5;
 
-  // Y: ear canal is at ~57% from forehead to chin
-  const earYRatio = isBehindEar ? 0.55 : 0.57;
+  // Y: ear is at 57% from forehead to chin (nose/mouth level)
+  const earYRatio = isBehindEar ? 0.56 : 0.58;
   const earY = (forehead.y + (chin.y - forehead.y) * earYRatio) * h;
   const imgY = earY + fittingPosY * 0.5;
 
@@ -2645,10 +2648,9 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   const worldX = (imgX / w - 0.5) * visibleWidth;
   const worldY = -(imgY / h - 0.5) * visibleHeight;
 
-  // Z: push model slightly behind the screen plane so it sits ON the head surface
-  // instead of floating in front. More depth when more turned (ear recedes).
+  // Z: slight depth so it appears on the head surface, not popping forward
   const absYaw = Math.abs(headYaw);
-  const zDepth = -0.3 - absYaw * 0.5;
+  const zDepth = -0.15 - absYaw * 0.2;
 
   model.position.set(worldX, worldY, zDepth);
   model.scale.set(
