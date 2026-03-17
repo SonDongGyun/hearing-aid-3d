@@ -2619,22 +2619,26 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
   model.visible = true;
 
   // ========================================
-  // POSITIONING: At the face edge landmark
+  // POSITIONING
   // ========================================
-  // When the ear is visible (head turned), the face edge landmark (234/454)
-  // is at the boundary of the visible face — right where the ear appears.
+  // Landmark 234/454 X = face edge (correct when head is turned)
+  // Landmark 234/454 Y = TEMPLE height (~38% down) — WRONG for ear
+  // Real ear Y = nose/mouth level (~58% down from forehead to chin)
   const edgeLandmark = isRight ? rightEdge : leftEdge;
   const landmarkX = edgeLandmark.x * w;
-  const landmarkY = edgeLandmark.y * h;
 
-  // Small nudge: BTE/RIC sits slightly behind the ear (outward from face center)
+  // X: use face edge landmark directly (+ tiny nudge for BTE)
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
   const dirFromCenter = landmarkX - faceCenterX;
   const dirSign = dirFromCenter > 0 ? 1 : -1;
   const xNudge = isBehindEar ? dirSign * faceWidth * 0.02 : 0;
 
+  // Y: calculate from face proportions — ear is at 58% from forehead to chin
+  const earYRatio = isBehindEar ? 0.55 : 0.58; // BTE slightly higher, ITC/CIC at ear canal
+  const earY = (forehead.y + (chin.y - forehead.y) * earYRatio) * h;
+
   const imgX = landmarkX + xNudge + fittingPosX * 0.5;
-  const imgY = landmarkY + fittingPosY * 0.5;
+  const imgY = earY + fittingPosY * 0.5;
 
   // Convert image coords → Three.js world coords
   const visibleHeight = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(fittingCamera3D.fov / 2));
