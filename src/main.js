@@ -2108,7 +2108,7 @@ let fittingAnimFrame = null;
 let fittingFacingMode = 'user';
 let fittingColor = 'silver';
 let fittingType = 'ric'; // 'ric', 'cic', 'itc', 'bte'
-let fittingEar = 'right';
+let fittingEar = 'both';
 let fittingPosX = 0, fittingPosY = 0, fittingScale = 1;
 let faceMesh = null;
 let fittingCameraUtil = null;
@@ -2385,36 +2385,18 @@ function setupVirtualFitting() {
   fittingCanvas = document.getElementById('fitting-canvas');
   fittingCtx = fittingCanvas.getContext('2d');
 
-  // Pre-initialize the 3D scene (lightweight, loads model in background)
   initFitting3D();
 
   document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
   document.getElementById('fitting-stop').addEventListener('click', stopFitting);
 
-  document.getElementById('fitting-flip').addEventListener('click', async () => {
-    fittingFacingMode = fittingFacingMode === 'user' ? 'environment' : 'user';
-    if (fittingActive) {
-      stopFitting();
-      await startFitting();
-    }
-  });
-
-  document.getElementById('fitting-capture').addEventListener('click', captureFitting);
-
+  // Color selection
   document.querySelectorAll('.fitting-color').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.fitting-color').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       fittingColor = btn.dataset.color;
       updateFittingModelColor(fittingColor);
-    });
-  });
-
-  document.querySelectorAll('.fitting-ear-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.fitting-ear-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      fittingEar = btn.dataset.ear;
     });
   });
 
@@ -2428,6 +2410,7 @@ function setupVirtualFitting() {
     });
   });
 
+  // Position/scale sliders
   document.getElementById('fitting-pos-x').addEventListener('input', (e) => {
     fittingPosX = parseInt(e.target.value);
   });
@@ -2436,13 +2419,6 @@ function setupVirtualFitting() {
   });
   document.getElementById('fitting-scale').addEventListener('input', (e) => {
     fittingScale = parseInt(e.target.value) / 100;
-  });
-
-  document.getElementById('fitting-download').addEventListener('click', downloadFittingImage);
-
-  document.getElementById('fitting-retry').addEventListener('click', () => {
-    document.getElementById('fitting-result').style.display = 'none';
-    startFitting();
   });
 }
 
@@ -2611,85 +2587,71 @@ function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin,
 
   const isRight = ear === 'right';
 
-  // Visibility based on head yaw
+  // Visibility: hide ear that faces AWAY from camera
+  // headYaw < 0 = user turned right = right ear hidden
+  // headYaw > 0 = user turned left = left ear hidden
   let visibility = 1;
-  if (isRight && headYaw < -0.35) {
-    visibility = Math.max(0, 1 - (-headYaw - 0.35) * 2.5);
-  } else if (!isRight && headYaw > 0.35) {
-    visibility = Math.max(0, 1 - (headYaw - 0.35) * 2.5);
+  if (isRight && headYaw < -0.4) {
+    visibility = Math.max(0, 1 - (-headYaw - 0.4) * 3);
+  } else if (!isRight && headYaw > 0.4) {
+    visibility = Math.max(0, 1 - (headYaw - 0.4) * 3);
   }
 
   if (!show || visibility <= 0) {
     model.visible = false;
     return;
   }
-
   model.visible = true;
 
-  // Calculate ear position in image coordinates
+  // Use the face edge landmark (234/454) as the anchor point
+  // This landmark moves naturally with the head, so the hearing aid tracks it
   const edgeLandmark = isRight ? rightEdge : leftEdge;
-  const edgeX = edgeLandmark.x * w;
-  const dirFromCenter = edgeX - faceCenterX;
-  const dirSign = dirFromCenter > 0 ? 1 : -1;
 
-  // Type-specific positioning offsets
+  // Use the landmark's ACTUAL coordinates directly
+  // These are already in image space — no need to recalculate Y from forehead/chin
+  const landmarkX = edgeLandmark.x * w;
+  const landmarkY = edgeLandmark.y * h;
+
+  // Tiny offset to push flush against the face edge (not floating in air)
+  // BTE/RIC: just barely past the edge, ITC/CIC: at the edge
   const isBehindEar = fittingType === 'ric' || fittingType === 'bte';
-  const xOffsetPercent = isBehindEar ? 0.12 : 0.04; // in-canal types are closer to the face
-  const yPercent = isBehindEar ? 0.52 : 0.50; // in-canal types are at ear canal level
+  const dirFromCenter = landmarkX - faceCenterX;
+  const dirSign = dirFromCenter > 0 ? 1 : -1;
+  const xNudge = isBehindEar ? dirSign * faceWidth * 0.03 : 0;
 
-  // Push beyond face edge toward actual ear
-  const imgX = edgeX + dirSign * faceWidth * xOffsetPercent + fittingPosX * (faceHeight / 280) * 0.3;
-  const imgY = (forehead.y + (chin.y - forehead.y) * yPercent) * h + fittingPosY * (faceHeight / 280) * 0.3;
+  const imgX = landmarkX + xNudge + fittingPosX * 0.5;
+  const imgY = landmarkY + fittingPosY * 0.5;
 
-  // Convert image coordinates (pixels) to Three.js world coordinates
-  // Camera FOV = 30deg, distance = 10, so visible height ≈ 10 * 2 * tan(15deg) ≈ 5.36
+  // Convert image coords → Three.js world coords
   const visibleHeight = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(fittingCamera3D.fov / 2));
   const visibleWidth = visibleHeight * (w / h);
-
-  // Image coords (0,0 = top-left) → Three.js coords (0,0 = center, Y up)
   const worldX = (imgX / w - 0.5) * visibleWidth;
   const worldY = -(imgY / h - 0.5) * visibleHeight;
 
   model.position.set(worldX, worldY, 0);
   model.scale.set(
-    isRight ? modelScale : -modelScale, // mirror X for left ear
+    isRight ? modelScale : -modelScale,
     modelScale,
     modelScale
   );
 
-  // Rotation depends on type
+  // Rotation based on type and head yaw
   if (fittingType === 'cic' || fittingType === 'itc') {
-    // In-canal: face outward from the ear, oriented into the ear canal
-    model.rotation.set(
-      0,
-      isRight ? -1.2 : 1.2,   // angled into ear canal
-      -headTilt
-    );
+    model.rotation.set(0, isRight ? -1.2 : 1.2, -headTilt);
   } else {
-    // BTE/RIC: show profile of behind-ear unit
-    model.rotation.set(
-      0.1,                           // slight upward tilt
-      isRight ? -0.8 : 0.8,         // angled to show profile
-      -headTilt                      // match head roll
-    );
+    model.rotation.set(0.1, isRight ? -0.8 : 0.8, -headTilt);
   }
+  model.rotation.y += headYaw * 0.5;
 
-  // Apply head yaw to rotate model naturally
-  model.rotation.y += headYaw * 0.4;
-
-  // LED blink
-  model.traverse((child) => {
-    if (child.isMesh && child.name === 'led_indicator' && child.material) {
-      child.material.opacity = 0.5 + Math.sin(time * 3) * 0.5;
-    }
-    if (child.isMesh && child.name === 'brand_ring' && child.material) {
-      child.material.opacity = 0.7 + Math.sin(time * 2) * 0.2;
-    }
-  });
-
-  // Apply visibility (fade when ear goes behind head)
+  // Animate LED and brand ring
   model.traverse((child) => {
     if (child.isMesh && child.material) {
+      if (child.name === 'led_indicator') {
+        child.material.opacity = 0.5 + Math.sin(time * 3) * 0.5;
+      } else if (child.name === 'brand_ring') {
+        child.material.opacity = 0.7 + Math.sin(time * 2) * 0.2;
+      }
+      // Apply visibility fade
       if (!child.material._origOpacity) {
         child.material._origOpacity = child.material.opacity !== undefined ? child.material.opacity : 1;
       }
@@ -2924,44 +2886,6 @@ function stopFitting() {
   // Reset guide oval opacity
   const guideOval = document.querySelector('.fitting-guide-oval');
   if (guideOval) guideOval.style.opacity = '1';
-}
-
-function captureFitting() {
-  const captureCanvas = document.createElement('canvas');
-  captureCanvas.width = fittingCanvas.width;
-  captureCanvas.height = fittingCanvas.height;
-  const captureCtx = captureCanvas.getContext('2d');
-
-  // Draw video frame
-  captureCtx.drawImage(fittingVideo, 0, 0, captureCanvas.width, captureCanvas.height);
-
-  // Draw 3D overlay from the fitting renderer
-  if (fittingRenderer3D) {
-    captureCtx.drawImage(fittingRenderer3D.domElement, 0, 0, captureCanvas.width, captureCanvas.height);
-  }
-  // Also draw any 2D canvas overlay
-  captureCtx.drawImage(fittingCanvas, 0, 0);
-
-  // Watermark
-  captureCtx.fillStyle = 'rgba(255,255,255,0.5)';
-  captureCtx.font = '12px "Noto Sans KR", sans-serif';
-  captureCtx.textAlign = 'right';
-  captureCtx.fillText('SoundClear Virtual Fitting', captureCanvas.width - 10, captureCanvas.height - 10);
-
-  const resultDiv = document.getElementById('fitting-result');
-  const resultImg = document.getElementById('fitting-result-img');
-  resultImg.src = captureCanvas.toDataURL('image/png');
-  resultDiv.style.display = 'block';
-
-  stopFitting();
-}
-
-function downloadFittingImage() {
-  const img = document.getElementById('fitting-result-img');
-  const link = document.createElement('a');
-  link.download = 'soundclear-fitting.png';
-  link.href = img.src;
-  link.click();
 }
 
 // ===== START =====
