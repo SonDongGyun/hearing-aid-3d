@@ -2098,7 +2098,7 @@ function drawEnvironmentSim() {
 }
 
 // ======================================================
-// 4. VIRTUAL FITTING (AR with Face Tracking)
+// 4. VIRTUAL FITTING (AR with Face Tracking + 3D Model)
 // ======================================================
 let fittingStream = null;
 let fittingVideo = null;
@@ -2115,34 +2115,161 @@ let lastFaceLandmarks = null;
 let faceDetected = false;
 let fittingActive = false;
 
-const FITTING_COLORS = {
-  silver: { body: '#d0d5e0', hook: '#c8cdd8', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.15)' },
-  black: { body: '#2a2a2e', hook: '#222226', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.25)' },
-  beige: { body: '#d4c5a9', hook: '#c4b599', ring: '#00c8ff', shadow: 'rgba(0,0,0,0.12)' },
-  rose: { body: '#e8b4b4', hook: '#d89999', ring: '#ffaacc', shadow: 'rgba(0,0,0,0.12)' }
+// 3D rendering for AR overlay
+let fittingScene = null;
+let fittingCamera3D = null;
+let fittingRenderer3D = null;
+let fittingModelRight = null;   // 3D model for right ear
+let fittingModelLeft = null;    // 3D model for left ear (mirrored)
+let fittingModelLoaded = false;
+
+const FITTING_COLORS_3D = {
+  silver: { body: 0xd0d5e0, ring: 0x00c8ff },
+  black:  { body: 0x2a2a2e, ring: 0x00c8ff },
+  beige:  { body: 0xd4c5a9, ring: 0x00c8ff },
+  rose:   { body: 0xe8b4b4, ring: 0xffaacc }
 };
 
-// MediaPipe Face Mesh landmark indices for ear positioning
-// Reference: https://github.com/google/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png
-// 234 = right tragion (right ear opening), 454 = left tragion (left ear opening)
-// 10 = forehead top center, 152 = chin bottom
-// 132 = right face edge (jaw near ear), 361 = left face edge (jaw near ear)
 const LANDMARKS = {
-  rightEar: 234,          // right tragion — the actual ear position
-  leftEar: 454,           // left tragion — the actual ear position
+  rightEar: 234,
+  leftEar: 454,
   foreheadTop: 10,
   chinBottom: 152,
-  noseTip: 1,
-  rightJawEar: 132,       // right jawline near ear
-  leftJawEar: 361,        // left jawline near ear
-  rightFaceEdge: 177,     // right face contour upper
-  leftFaceEdge: 401       // left face contour upper
+  noseTip: 1
 };
+
+// Initialize 3D scene for AR overlay rendering
+function initFitting3D() {
+  // Separate Three.js scene for the hearing aid AR overlay
+  fittingScene = new THREE.Scene();
+
+  // Orthographic-like perspective for overlay (narrow FOV = less distortion)
+  fittingCamera3D = new THREE.PerspectiveCamera(30, 640 / 480, 0.1, 100);
+  fittingCamera3D.position.set(0, 0, 10);
+
+  // Transparent background renderer
+  fittingRenderer3D = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  fittingRenderer3D.setSize(640, 480);
+  fittingRenderer3D.setClearColor(0x000000, 0);
+  fittingRenderer3D.toneMapping = THREE.ACESFilmicToneMapping;
+  fittingRenderer3D.outputColorSpace = THREE.SRGBColorSpace;
+
+  // Lighting to match product showcase quality
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  fittingScene.add(ambientLight);
+
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  keyLight.position.set(2, 3, 5);
+  fittingScene.add(keyLight);
+
+  const fillLight = new THREE.DirectionalLight(0x88aaff, 0.4);
+  fillLight.position.set(-3, 1, 3);
+  fittingScene.add(fillLight);
+
+  const rimLight = new THREE.PointLight(0x00c8ff, 0.6, 20);
+  rimLight.position.set(0, 2, -3);
+  fittingScene.add(rimLight);
+
+  // Load GLB model
+  const loader = new GLTFLoader();
+  loader.load('/models/hearing-aid.glb', (gltf) => {
+    const model = gltf.scene;
+
+    // Enhance materials for AR rendering
+    model.traverse((child) => {
+      if (child.isMesh) {
+        const oldMat = child.material;
+        if (child.name === 'body' || child.name === 'battery_door' || child.name === 'button_volume') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.5,
+            roughness: 0.15,
+            clearcoat: 1.0,
+            clearcoatRoughness: 0.05,
+            envMapIntensity: 1.0
+          });
+        } else if (child.name === 'brand_ring') {
+          child.material = new THREE.MeshBasicMaterial({
+            color: 0x00c8ff,
+            transparent: true,
+            opacity: 0.9
+          });
+        } else if (child.name === 'led_indicator') {
+          child.material = new THREE.MeshBasicMaterial({
+            color: 0x00ff88,
+            transparent: true,
+            opacity: 0.9
+          });
+        } else if (child.name === 'ear_hook' || child.name === 'sound_tube') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.0,
+            roughness: 0.1,
+            transparent: true,
+            opacity: 0.85,
+            clearcoat: 0.3
+          });
+        } else if (child.name === 'ear_tip') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.0,
+            roughness: 0.5
+          });
+        } else if (child.name === 'mic_grille') {
+          child.material = new THREE.MeshPhysicalMaterial({
+            color: oldMat.color,
+            metalness: 0.7,
+            roughness: 0.3
+          });
+        }
+      }
+    });
+
+    // Right ear model
+    fittingModelRight = model.clone();
+    fittingModelRight.visible = false;
+    fittingScene.add(fittingModelRight);
+
+    // Left ear model (mirrored)
+    fittingModelLeft = model.clone();
+    fittingModelLeft.scale.x = -1; // mirror on X axis
+    fittingModelLeft.visible = false;
+    fittingScene.add(fittingModelLeft);
+
+    fittingModelLoaded = true;
+  }, undefined, (err) => {
+    console.warn('AR model load failed:', err);
+  });
+}
+
+function updateFittingModelColor(color) {
+  const colors = FITTING_COLORS_3D[color];
+  if (!colors) return;
+
+  [fittingModelRight, fittingModelLeft].forEach(model => {
+    if (!model) return;
+    model.traverse((child) => {
+      if (child.isMesh) {
+        if (child.name === 'body' || child.name === 'battery_door' || child.name === 'button_volume') {
+          child.material.color.setHex(colors.body);
+        } else if (child.name === 'brand_ring') {
+          child.material.color.setHex(colors.ring);
+        } else if (child.name === 'ear_hook' || child.name === 'sound_tube') {
+          // Slightly lighter version of body color
+          child.material.color.setHex(colors.body).offsetHSL(0, -0.05, 0.05);
+        }
+      }
+    });
+  });
+}
 
 function setupVirtualFitting() {
   fittingVideo = document.getElementById('fitting-video');
   fittingCanvas = document.getElementById('fitting-canvas');
   fittingCtx = fittingCanvas.getContext('2d');
+
+  // Pre-initialize the 3D scene (lightweight, loads model in background)
+  initFitting3D();
 
   document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
   document.getElementById('fitting-stop').addEventListener('click', stopFitting);
@@ -2162,6 +2289,7 @@ function setupVirtualFitting() {
       document.querySelectorAll('.fitting-color').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       fittingColor = btn.dataset.color;
+      updateFittingModelColor(fittingColor);
     });
   });
 
@@ -2219,11 +2347,8 @@ async function initFaceMesh() {
 function onFaceMeshResults(results) {
   if (!fittingActive) return;
 
-  const ctx = fittingCtx;
   const w = fittingCanvas.width;
   const h = fittingCanvas.height;
-
-  ctx.clearRect(0, 0, w, h);
 
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
     lastFaceLandmarks = results.multiFaceLandmarks[0];
@@ -2232,23 +2357,21 @@ function onFaceMeshResults(results) {
     const statusEl = document.getElementById('fitting-status');
     if (statusEl) statusEl.textContent = '얼굴 인식됨 — AR 피팅 활성화';
 
-    // Hide the guide oval once face is detected
     const guideOval = document.querySelector('.fitting-guide-oval');
     if (guideOval) guideOval.style.opacity = '0.2';
 
-    const colors = FITTING_COLORS[fittingColor];
-    const time = performance.now() * 0.001;
-    const landmarks = lastFaceLandmarks;
-
-    if (fittingEar === 'right' || fittingEar === 'both') {
-      drawARHearingAid(ctx, w, h, 'right', landmarks, colors, time);
-    }
-    if (fittingEar === 'left' || fittingEar === 'both') {
-      drawARHearingAid(ctx, w, h, 'left', landmarks, colors, time);
-    }
+    // Render 3D hearing aid models based on face landmarks
+    render3DFitting(w, h, lastFaceLandmarks);
   } else {
     faceDetected = false;
     lastFaceLandmarks = null;
+
+    // Hide models when no face
+    if (fittingModelRight) fittingModelRight.visible = false;
+    if (fittingModelLeft) fittingModelLeft.visible = false;
+
+    // Clear the overlay
+    fittingCtx.clearRect(0, 0, w, h);
 
     const statusEl = document.getElementById('fitting-status');
     if (statusEl) statusEl.textContent = '얼굴을 카메라에 맞춰주세요...';
@@ -2258,215 +2381,139 @@ function onFaceMeshResults(results) {
   }
 }
 
-function drawARHearingAid(ctx, w, h, ear, landmarks, colors, time) {
-  const isRight = ear === 'right';
+function render3DFitting(w, h, landmarks) {
+  if (!fittingModelLoaded || !fittingRenderer3D) return;
 
-  // Core landmarks
-  const rightEdge = landmarks[LANDMARKS.rightEar];  // face edge near right ear
-  const leftEdge = landmarks[LANDMARKS.leftEar];     // face edge near left ear
+  // Ensure renderer matches canvas size
+  if (fittingRenderer3D.domElement.width !== w || fittingRenderer3D.domElement.height !== h) {
+    fittingRenderer3D.setSize(w, h);
+    fittingCamera3D.aspect = w / h;
+    fittingCamera3D.updateProjectionMatrix();
+  }
+
+  const rightEdge = landmarks[LANDMARKS.rightEar];
+  const leftEdge = landmarks[LANDMARKS.leftEar];
   const forehead = landmarks[LANDMARKS.foreheadTop];
   const chin = landmarks[LANDMARKS.chinBottom];
   const nose = landmarks[LANDMARKS.noseTip];
 
-  // Face dimensions
   const faceHeight = (chin.y - forehead.y) * h;
   const faceWidth = Math.abs(rightEdge.x - leftEdge.x) * w;
   const faceCenterX = (rightEdge.x + leftEdge.x) / 2 * w;
-  const baseScale = faceHeight / 280;
 
-  // The face edge landmark (234/454) is at the TEMPLE, not the actual ear.
-  // Real ear position:
-  //   X: further outward from face center than the landmark
-  //   Y: about 50-55% down from forehead to chin (nose/mouth level, NOT eye level)
-  const edgeLandmark = isRight ? rightEdge : leftEdge;
-  const edgeX = edgeLandmark.x * w;
-
-  // Direction from face center to this edge
-  const dirFromCenter = edgeX - faceCenterX;
-  const dirSign = dirFromCenter > 0 ? 1 : -1;
-
-  // Push X beyond face edge toward actual ear (12% of face width further out)
-  const posX = edgeX + dirSign * faceWidth * 0.12 + fittingPosX * baseScale * 0.3;
-
-  // Ear Y: 52% down from forehead to chin (NOT landmark Y which is at temple/eye level)
-  const earY = (forehead.y + (chin.y - forehead.y) * 0.52) * h;
-  const posY = earY + fittingPosY * baseScale * 0.3;
-
-  const scale = baseScale * fittingScale;
-
-  // Head tilt (roll) from ear-to-ear angle
+  // Head tilt (roll)
   const headTilt = Math.atan2(
     (rightEdge.y - leftEdge.y) * h,
     (rightEdge.x - leftEdge.x) * w
   );
 
-  // Head yaw: nose offset from face center (normalized)
-  // Raw selfie camera: user's right = image left
-  // headYaw < 0 → nose moved left in image → user turned head to THEIR right → right ear hidden
-  // headYaw > 0 → nose moved right in image → user turned head to THEIR left → left ear hidden
+  // Head yaw
   const headYaw = (nose.x * w - faceCenterX) / (faceWidth * 0.5);
 
+  // 3D model scale based on face size
+  const modelScale = faceHeight / 140 * fittingScale;
+
+  const time = performance.now() * 0.001;
+
+  // Position and show/hide models for each ear
+  const showRight = fittingEar === 'right' || fittingEar === 'both';
+  const showLeft = fittingEar === 'left' || fittingEar === 'both';
+
+  positionEarModel(fittingModelRight, showRight, 'right',
+    rightEdge, leftEdge, forehead, chin, nose,
+    w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
+
+  positionEarModel(fittingModelLeft, showLeft, 'left',
+    rightEdge, leftEdge, forehead, chin, nose,
+    w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
+
+  // Render 3D scene to offscreen canvas
+  fittingRenderer3D.render(fittingScene, fittingCamera3D);
+
+  // Composite 3D render onto the 2D overlay canvas
+  const ctx = fittingCtx;
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
+}
+
+function positionEarModel(model, show, ear, rightEdge, leftEdge, forehead, chin, nose,
+                           w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time) {
+  if (!model) return;
+
+  const isRight = ear === 'right';
+
+  // Visibility based on head yaw
   let visibility = 1;
   if (isRight && headYaw < -0.35) {
-    // User turned right → right ear goes behind head → hide right hearing aid
     visibility = Math.max(0, 1 - (-headYaw - 0.35) * 2.5);
   } else if (!isRight && headYaw > 0.35) {
-    // User turned left → left ear goes behind head → hide left hearing aid
     visibility = Math.max(0, 1 - (headYaw - 0.35) * 2.5);
   }
 
-  if (visibility <= 0) return;
-
-  ctx.save();
-  ctx.globalAlpha = visibility;
-  ctx.translate(posX, posY);
-  ctx.rotate(headTilt);
-  ctx.scale(scale, scale);
-
-  // Mirror drawing for the ear on the opposite side
-  // Drawing assumes right-ear orientation (hook curves left)
-  // In raw selfie: right ear = left of image (dirFromCenter < 0) → no mirror needed
-  //                left ear = right of image (dirFromCenter > 0) → mirror
-  if (dirFromCenter > 0) {
-    ctx.scale(-1, 1);
+  if (!show || visibility <= 0) {
+    model.visible = false;
+    return;
   }
 
-  // === Draw shadow first ===
-  ctx.save();
-  ctx.filter = 'blur(4px)';
-  ctx.beginPath();
-  ctx.moveTo(2, -28);
-  ctx.bezierCurveTo(14, -30, 20, -18, 20, -3);
-  ctx.bezierCurveTo(20, 17, 16, 30, 10, 37);
-  ctx.bezierCurveTo(6, 42, -2, 42, -6, 37);
-  ctx.bezierCurveTo(-12, 30, -16, 17, -16, -3);
-  ctx.bezierCurveTo(-16, -18, -10, -30, 2, -28);
-  ctx.closePath();
-  ctx.fillStyle = colors.shadow;
-  ctx.fill();
-  ctx.restore();
+  model.visible = true;
 
-  // === Main body ===
-  ctx.beginPath();
-  ctx.moveTo(0, -30);
-  ctx.bezierCurveTo(12, -32, 18, -20, 18, -5);
-  ctx.bezierCurveTo(18, 15, 14, 28, 8, 35);
-  ctx.bezierCurveTo(4, 40, -4, 40, -8, 35);
-  ctx.bezierCurveTo(-14, 28, -18, 15, -18, -5);
-  ctx.bezierCurveTo(-18, -20, -12, -32, 0, -30);
-  ctx.closePath();
+  // Calculate ear position in image coordinates
+  const edgeLandmark = isRight ? rightEdge : leftEdge;
+  const edgeX = edgeLandmark.x * w;
+  const dirFromCenter = edgeX - faceCenterX;
+  const dirSign = dirFromCenter > 0 ? 1 : -1;
 
-  const bodyGrad = ctx.createLinearGradient(-18, -30, 18, 40);
-  bodyGrad.addColorStop(0, lightenColor(colors.body, 10));
-  bodyGrad.addColorStop(0.3, colors.body);
-  bodyGrad.addColorStop(1, shadeColor(colors.body, -25));
-  ctx.fillStyle = bodyGrad;
-  ctx.fill();
+  // Push beyond face edge toward actual ear
+  const imgX = edgeX + dirSign * faceWidth * 0.12 + fittingPosX * (faceHeight / 280) * 0.3;
+  const imgY = (forehead.y + (chin.y - forehead.y) * 0.52) * h + fittingPosY * (faceHeight / 280) * 0.3;
 
-  ctx.strokeStyle = shadeColor(colors.body, -35);
-  ctx.lineWidth = 0.8;
-  ctx.stroke();
+  // Convert image coordinates (pixels) to Three.js world coordinates
+  // Camera FOV = 30deg, distance = 10, so visible height ≈ 10 * 2 * tan(15deg) ≈ 5.36
+  const visibleHeight = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(fittingCamera3D.fov / 2));
+  const visibleWidth = visibleHeight * (w / h);
 
-  // === Subtle body highlight (3D effect) ===
-  ctx.beginPath();
-  ctx.moveTo(-2, -28);
-  ctx.bezierCurveTo(6, -30, 12, -22, 12, -10);
-  ctx.bezierCurveTo(12, 0, 8, 8, 4, 12);
-  ctx.bezierCurveTo(0, 6, -6, -5, -6, -15);
-  ctx.bezierCurveTo(-6, -22, -4, -28, -2, -28);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.fill();
+  // Image coords (0,0 = top-left) → Three.js coords (0,0 = center, Y up)
+  const worldX = (imgX / w - 0.5) * visibleWidth;
+  const worldY = -(imgY / h - 0.5) * visibleHeight;
 
-  // === Brand ring ===
-  ctx.beginPath();
-  ctx.ellipse(0, 2, 14, 2.5, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = colors.ring;
-  ctx.lineWidth = 2;
-  ctx.shadowColor = colors.ring;
-  ctx.shadowBlur = 6 + Math.sin(time * 2) * 3;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
+  model.position.set(worldX, worldY, 0);
+  model.scale.set(
+    isRight ? modelScale : -modelScale, // mirror X for left ear
+    modelScale,
+    modelScale
+  );
 
-  // === LED ===
-  const ledGlow = 0.5 + Math.sin(time * 3) * 0.5;
-  ctx.beginPath();
-  ctx.arc(8, -18, 2, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(0, 255, 136, ${ledGlow})`;
-  ctx.shadowColor = '#00ff88';
-  ctx.shadowBlur = 8 * ledGlow;
-  ctx.fill();
-  ctx.shadowBlur = 0;
+  // Rotation: face the camera + apply head tilt
+  // BTE hearing aid viewed from the side: rotate to show the profile
+  model.rotation.set(
+    0.1,                           // slight upward tilt
+    isRight ? -0.8 : 0.8,         // angled to show profile (not straight at camera)
+    -headTilt                      // match head roll
+  );
 
-  // === Mic grille ===
-  ctx.fillStyle = shadeColor(colors.body, -45);
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 2; j++) {
-      ctx.beginPath();
-      ctx.arc(-3 + j * 6, -24 + i * 3, 0.8, 0, Math.PI * 2);
-      ctx.fill();
+  // Apply head yaw to rotate model naturally
+  model.rotation.y += headYaw * 0.4;
+
+  // LED blink
+  model.traverse((child) => {
+    if (child.isMesh && child.name === 'led_indicator' && child.material) {
+      child.material.opacity = 0.5 + Math.sin(time * 3) * 0.5;
     }
-  }
+    if (child.isMesh && child.name === 'brand_ring' && child.material) {
+      child.material.opacity = 0.7 + Math.sin(time * 2) * 0.2;
+    }
+  });
 
-  // === Volume button ===
-  ctx.beginPath();
-  ctx.roundRect(10, -4, 5, 10, 2);
-  ctx.fillStyle = shadeColor(colors.body, -10);
-  ctx.fill();
-  ctx.strokeStyle = shadeColor(colors.body, -25);
-  ctx.lineWidth = 0.5;
-  ctx.stroke();
-
-  // === Ear hook (curves over the ear) ===
-  ctx.beginPath();
-  ctx.moveTo(0, -30);
-  ctx.bezierCurveTo(-5, -44, -22, -50, -32, -42);
-  ctx.bezierCurveTo(-40, -36, -44, -22, -40, -8);
-  ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 3.5;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-  // Hook highlight
-  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // === Sound tube ===
-  ctx.beginPath();
-  ctx.moveTo(-40, -8);
-  ctx.bezierCurveTo(-38, 8, -34, 18, -30, 25);
-  ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
-
-  // === Ear tip (dome) ===
-  ctx.beginPath();
-  ctx.ellipse(-30, 27, 7, 9, -0.2, 0, Math.PI * 2);
-  const tipGrad = ctx.createRadialGradient(-30, 27, 0, -30, 27, 9);
-  tipGrad.addColorStop(0, 'rgba(210, 210, 205, 0.85)');
-  tipGrad.addColorStop(0.7, 'rgba(190, 190, 185, 0.7)');
-  tipGrad.addColorStop(1, 'rgba(170, 170, 165, 0.5)');
-  ctx.fillStyle = tipGrad;
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(150,150,145,0.4)';
-  ctx.lineWidth = 0.8;
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-function lightenColor(color, percent) {
-  return shadeColor(color, Math.abs(percent));
-}
-
-function shadeColor(color, percent) {
-  const num = parseInt(color.replace('#', ''), 16);
-  const amt = Math.round(2.55 * percent);
-  const R = Math.min(255, Math.max(0, (num >> 16) + amt));
-  const G = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amt));
-  const B = Math.min(255, Math.max(0, (num & 0x0000FF) + amt));
-  return `rgb(${R},${G},${B})`;
+  // Apply visibility (fade when ear goes behind head)
+  model.traverse((child) => {
+    if (child.isMesh && child.material) {
+      if (!child.material._origOpacity) {
+        child.material._origOpacity = child.material.opacity !== undefined ? child.material.opacity : 1;
+      }
+      child.material.transparent = true;
+      child.material.opacity = child.material._origOpacity * visibility;
+    }
+  });
 }
 
 async function startFitting() {
@@ -2555,119 +2602,67 @@ function sendFittingFrame() {
   });
 }
 
-// Fallback when MediaPipe is not available
+// Fallback when MediaPipe is not available — render 3D model at estimated position
 function drawFittingFallback() {
   if (!fittingActive) return;
 
-  const ctx = fittingCtx;
-  const w = fittingCanvas.width;
-  const h = fittingCanvas.height;
-  ctx.clearRect(0, 0, w, h);
+  if (fittingModelLoaded && fittingRenderer3D) {
+    const w = fittingCanvas.width;
+    const h = fittingCanvas.height;
+    const isSelfie = fittingFacingMode === 'user';
+    const modelScale = (h / 400) * fittingScale;
+    const time = performance.now() * 0.001;
 
-  const colors = FITTING_COLORS[fittingColor];
-  const time = performance.now() * 0.001;
-  const isSelfie = fittingFacingMode === 'user';
+    const visibleHeight = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(fittingCamera3D.fov / 2));
+    const visibleWidth = visibleHeight * (w / h);
 
-  // Estimated positions without face detection
-  const drawSide = (ear) => {
-    const isRight = ear === 'right';
-    const screenSide = isSelfie ? !isRight : isRight;
-    const baseX = screenSide ? w * 0.78 : w * 0.22;
-    const baseY = h * 0.38;
-    const posX = baseX + fittingPosX * (w / 500);
-    const posY = baseY + fittingPosY * (h / 500);
-    const scale = fittingScale * (h / 500);
+    if (fittingRenderer3D.domElement.width !== w || fittingRenderer3D.domElement.height !== h) {
+      fittingRenderer3D.setSize(w, h);
+      fittingCamera3D.aspect = w / h;
+      fittingCamera3D.updateProjectionMatrix();
+    }
 
-    ctx.save();
-    ctx.globalAlpha = 1;
-    ctx.translate(posX, posY);
-    ctx.scale(scale, scale);
-    if (!screenSide) ctx.scale(-1, 1);
+    const placeModel = (model, ear) => {
+      if (!model) return;
+      const isRight = ear === 'right';
+      const show = fittingEar === ear || fittingEar === 'both';
+      if (!show) { model.visible = false; return; }
 
-    // Reuse the same drawing code (simplified call)
-    drawHearingAidShape(ctx, colors, time);
+      model.visible = true;
+      const screenSide = isSelfie ? !isRight : isRight;
+      const imgX = screenSide ? w * 0.78 : w * 0.22;
+      const imgY = h * 0.45;
 
-    ctx.restore();
-  };
+      const worldX = ((imgX + fittingPosX * (h / 500)) / w - 0.5) * visibleWidth;
+      const worldY = -((imgY + fittingPosY * (h / 500)) / h - 0.5) * visibleHeight;
 
-  if (fittingEar === 'right' || fittingEar === 'both') drawSide('right');
-  if (fittingEar === 'left' || fittingEar === 'both') drawSide('left');
+      model.position.set(worldX, worldY, 0);
+      model.scale.set(isRight ? modelScale : -modelScale, modelScale, modelScale);
+      model.rotation.set(0.1, isRight ? -0.8 : 0.8, 0);
 
-  // Show hint that face detection is unavailable
-  ctx.fillStyle = 'rgba(255,200,0,0.7)';
-  ctx.font = `${w < 400 ? 10 : 13}px "Noto Sans KR", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('얼굴 인식 로딩 중... 수동 조절 모드', w / 2, h - 16);
+      model.traverse((child) => {
+        if (child.isMesh && child.name === 'led_indicator' && child.material) {
+          child.material.opacity = 0.5 + Math.sin(time * 3) * 0.5;
+        }
+      });
+    };
+
+    placeModel(fittingModelRight, 'right');
+    placeModel(fittingModelLeft, 'left');
+
+    fittingRenderer3D.render(fittingScene, fittingCamera3D);
+
+    const ctx = fittingCtx;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
+
+    ctx.fillStyle = 'rgba(255,200,0,0.7)';
+    ctx.font = `${w < 400 ? 10 : 13}px "Noto Sans KR", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('얼굴 인식 로딩 중... 수동 조절 모드', w / 2, h - 16);
+  }
 
   fittingAnimFrame = requestAnimationFrame(drawFittingFallback);
-}
-
-function drawHearingAidShape(ctx, colors, time) {
-  // Body
-  ctx.beginPath();
-  ctx.moveTo(0, -30);
-  ctx.bezierCurveTo(12, -32, 18, -20, 18, -5);
-  ctx.bezierCurveTo(18, 15, 14, 28, 8, 35);
-  ctx.bezierCurveTo(4, 40, -4, 40, -8, 35);
-  ctx.bezierCurveTo(-14, 28, -18, 15, -18, -5);
-  ctx.bezierCurveTo(-18, -20, -12, -32, 0, -30);
-  ctx.closePath();
-  const bodyGrad = ctx.createLinearGradient(-18, -30, 18, 40);
-  bodyGrad.addColorStop(0, lightenColor(colors.body, 10));
-  bodyGrad.addColorStop(0.3, colors.body);
-  bodyGrad.addColorStop(1, shadeColor(colors.body, -25));
-  ctx.fillStyle = bodyGrad;
-  ctx.fill();
-  ctx.strokeStyle = shadeColor(colors.body, -35);
-  ctx.lineWidth = 0.8;
-  ctx.stroke();
-
-  // Brand ring
-  ctx.beginPath();
-  ctx.ellipse(0, 2, 14, 2.5, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = colors.ring;
-  ctx.lineWidth = 2;
-  ctx.shadowColor = colors.ring;
-  ctx.shadowBlur = 6 + Math.sin(time * 2) * 3;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  // LED
-  const ledGlow = 0.5 + Math.sin(time * 3) * 0.5;
-  ctx.beginPath();
-  ctx.arc(8, -18, 2, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(0, 255, 136, ${ledGlow})`;
-  ctx.shadowColor = '#00ff88';
-  ctx.shadowBlur = 8 * ledGlow;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // Ear hook
-  ctx.beginPath();
-  ctx.moveTo(0, -30);
-  ctx.bezierCurveTo(-5, -44, -22, -50, -32, -42);
-  ctx.bezierCurveTo(-40, -36, -44, -22, -40, -8);
-  ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 3.5;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-
-  // Sound tube
-  ctx.beginPath();
-  ctx.moveTo(-40, -8);
-  ctx.bezierCurveTo(-38, 8, -34, 18, -30, 25);
-  ctx.strokeStyle = colors.hook;
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
-
-  // Ear tip
-  ctx.beginPath();
-  ctx.ellipse(-30, 27, 7, 9, -0.2, 0, Math.PI * 2);
-  const tipGrad = ctx.createRadialGradient(-30, 27, 0, -30, 27, 9);
-  tipGrad.addColorStop(0, 'rgba(210, 210, 205, 0.85)');
-  tipGrad.addColorStop(1, 'rgba(170, 170, 165, 0.5)');
-  ctx.fillStyle = tipGrad;
-  ctx.fill();
 }
 
 function stopFitting() {
@@ -2689,6 +2684,15 @@ function stopFitting() {
   }
 
   if (fittingVideo) fittingVideo.srcObject = null;
+
+  // Hide 3D models
+  if (fittingModelRight) fittingModelRight.visible = false;
+  if (fittingModelLeft) fittingModelLeft.visible = false;
+
+  // Clear overlay canvas
+  if (fittingCtx && fittingCanvas) {
+    fittingCtx.clearRect(0, 0, fittingCanvas.width, fittingCanvas.height);
+  }
 
   lastFaceLandmarks = null;
   faceDetected = false;
@@ -2720,10 +2724,14 @@ function captureFitting() {
   // Draw video frame
   captureCtx.drawImage(fittingVideo, 0, 0, captureCanvas.width, captureCanvas.height);
 
-  // Draw overlay
+  // Draw 3D overlay from the fitting renderer
+  if (fittingRenderer3D) {
+    captureCtx.drawImage(fittingRenderer3D.domElement, 0, 0, captureCanvas.width, captureCanvas.height);
+  }
+  // Also draw any 2D canvas overlay
   captureCtx.drawImage(fittingCanvas, 0, 0);
 
-  // Add watermark
+  // Watermark
   captureCtx.fillStyle = 'rgba(255,255,255,0.5)';
   captureCtx.font = '12px "Noto Sans KR", sans-serif';
   captureCtx.textAlign = 'right';
