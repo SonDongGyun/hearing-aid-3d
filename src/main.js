@@ -2142,16 +2142,29 @@ const FITTING_COLORS_3D = {
 };
 
 const LANDMARKS = {
-  rightEar: 234,       // right tragus (ear edge visible from front)
-  leftEar: 454,        // left tragus
-  rightEarTop: 127,    // top of right ear
-  leftEarTop: 356,     // top of left ear
-  rightEarLobe: 177,   // right ear lobe area
-  leftEarLobe: 401,    // left ear lobe area
+  // Face contour near ear (tragus area)
+  rightEar: 234,
+  leftEar: 454,
+  // Upper face contour near ear
+  rightEarUpper: 127,
+  leftEarUpper: 356,
+  // Lower face contour near ear (jaw/lobe area)
+  rightEarLower: 177,
+  leftEarLower: 401,
+  // Additional ear-adjacent landmarks for triangulation
+  rightTemple: 162,    // right temple area
+  leftTemple: 389,     // left temple area
+  rightCheekOuter: 93, // outer right cheek near ear
+  leftCheekOuter: 323, // outer left cheek near ear
+  // Core face
   foreheadTop: 10,
   chinBottom: 152,
-  noseTip: 1
+  noseTip: 1,
+  noseBridge: 6,       // bridge of nose for depth reference
 };
+
+// Minimum head yaw to consider an ear visible (0~1 scale, ~20-25 degrees)
+const EAR_VISIBILITY_THRESHOLD = 0.28;
 
 // Create in-canal hearing aid models (CIC/ITC) using simple geometry
 function createInCanalModel(type) {
@@ -2545,15 +2558,10 @@ function onFaceMeshResults(results) {
     lastFaceLandmarks = results.multiFaceLandmarks[0];
     faceDetected = true;
 
-    const statusEl = document.getElementById('fitting-status');
-    if (statusEl) {
-      statusEl.textContent = '얼굴 인식 완료 — 보청기 피팅 중';
-    }
-
     const guideOval = document.querySelector('.fitting-guide-oval');
     if (guideOval) guideOval.style.opacity = '0.2';
 
-    // Render 3D hearing aid models based on face landmarks
+    // Render 3D hearing aid models based on face landmarks (status updated inside)
     try {
       render3DFitting(w, h, lastFaceLandmarks);
     } catch (e) {
@@ -2605,15 +2613,19 @@ function render3DFitting(w, h, landmarks) {
     (rightEdge.x - leftEdge.x) * w
   );
 
-  // Head yaw
+  // Head yaw: positive = nose moves right in original video = user turns head to THEIR LEFT
+  // In original (non-mirrored) video:
+  //   landmark 234 (user's right ear) is on LEFT side (small x)
+  //   landmark 454 (user's left ear) is on RIGHT side (large x)
+  // headYaw > 0 → user turned their head LEFT → user's RIGHT ear becomes visible
+  // headYaw < 0 → user turned their head RIGHT → user's LEFT ear becomes visible
   const headYaw = (nose.x * w - faceCenterX) / (faceWidth * 0.5);
 
-  // Scale divisors per type (CRITICAL: these produce tiny, realistic sizes)
-  // Model is ~4 units tall. Visible height is ~5.36 units.
-  // Face takes ~3 units of visible height.
-  // BTE: 20% of face → faceHeight/1700
-  // RIC: 15% of face → faceHeight/2300
-  // ITC/CIC: these use different models with different base sizes
+  // Determine which ear(s) are visible based on head yaw
+  // Only show hearing aid when ear is actually exposed (head turned enough)
+  const rightEarVisible = headYaw > EAR_VISIBILITY_THRESHOLD;
+  const leftEarVisible = headYaw < -EAR_VISIBILITY_THRESHOLD;
+
   const SCALE_DIVISORS = {
     ric: 2300,
     bte: 1700,
@@ -2634,6 +2646,24 @@ function render3DFitting(w, h, landmarks) {
   if (fittingITCRight) fittingITCRight.visible = false;
   if (fittingITCLeft) fittingITCLeft.visible = false;
 
+  // Update status: guide user to turn head
+  const statusEl = document.getElementById('fitting-status');
+  if (statusEl) {
+    if (!rightEarVisible && !leftEarVisible) {
+      statusEl.textContent = '고개를 좌우로 돌려 귀를 보여주세요';
+    } else {
+      const side = rightEarVisible && leftEarVisible ? '양쪽' : rightEarVisible ? '오른쪽' : '왼쪽';
+      statusEl.textContent = `${side} 귀 감지됨 — 보청기 피팅 중`;
+    }
+  }
+
+  // If no ear is visible, just render empty (video feed is already drawn)
+  if (!rightEarVisible && !leftEarVisible) {
+    fittingRenderer3D.render(fittingScene, fittingCamera3D);
+    fittingCtx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
+    return;
+  }
+
   // Select which models to use based on type
   let rightModel, leftModel;
   if (fittingType === 'cic') {
@@ -2643,21 +2673,21 @@ function render3DFitting(w, h, landmarks) {
     rightModel = fittingITCRight;
     leftModel = fittingITCLeft;
   } else {
-    // RIC and BTE use the GLB model
     if (!fittingModelLoaded) return;
     rightModel = fittingModelRight;
     leftModel = fittingModelLeft;
   }
 
-  const showRight = fittingEar === 'right' || fittingEar === 'both';
-  const showLeft = fittingEar === 'left' || fittingEar === 'both';
+  const wantRight = fittingEar === 'right' || fittingEar === 'both';
+  const wantLeft = fittingEar === 'left' || fittingEar === 'both';
 
+  // Only position ears that are BOTH wanted AND visible
   if (rightModel) {
-    positionEarModel(rightModel, showRight, 'right', landmarks,
+    positionEarModel(rightModel, wantRight && rightEarVisible, 'right', landmarks,
       w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
   }
   if (leftModel) {
-    positionEarModel(leftModel, showLeft, 'left', landmarks,
+    positionEarModel(leftModel, wantLeft && leftEarVisible, 'left', landmarks,
       w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
   }
 
@@ -2677,43 +2707,84 @@ function positionEarModel(model, show, ear, landmarks,
     return;
   }
 
+  // =====================================================
+  // EAR POSITION: Triangulate from multiple landmarks
+  // =====================================================
+  // MediaPipe Face Mesh landmarks near the ear:
+  //   tragus (234/454): face contour at ear level
+  //   upper (127/356): face contour above ear
+  //   lower (177/401): face contour below ear (jaw near lobe)
+  //   temple (162/389): temple area
+  //   cheekOuter (93/323): outer cheek near ear
+  //
+  // The tragus landmark is at the FACE BOUNDARY, not the ear canal.
+  // The actual ear canal is BEYOND the face boundary.
+  // When head turns, we offset outward from the tragus to reach the ear canal.
+
+  const tragus = isRight ? landmarks[LANDMARKS.rightEar] : landmarks[LANDMARKS.leftEar];
+  const earUpper = isRight ? landmarks[LANDMARKS.rightEarUpper] : landmarks[LANDMARKS.leftEarUpper];
+  const earLower = isRight ? landmarks[LANDMARKS.rightEarLower] : landmarks[LANDMARKS.leftEarLower];
+  const temple = isRight ? landmarks[LANDMARKS.rightTemple] : landmarks[LANDMARKS.leftTemple];
+  const cheekOuter = isRight ? landmarks[LANDMARKS.rightCheekOuter] : landmarks[LANDMARKS.leftCheekOuter];
+
+  if (!tragus) { model.visible = false; return; }
+
   model.visible = true;
 
-  // ========================================
-  // POSITION: Auto from face mesh landmarks
-  // ========================================
-  // Use the ear tragus landmark as base, then offset slightly
-  // to place the hearing aid at the correct ear position.
-  const earLandmark = isRight ? landmarks[LANDMARKS.rightEar] : landmarks[LANDMARKS.leftEar];
-  const earTopLm = isRight ? landmarks[LANDMARKS.rightEarTop] : landmarks[LANDMARKS.leftEarTop];
-  const forehead = landmarks[LANDMARKS.foreheadTop];
-  const chin = landmarks[LANDMARKS.chinBottom];
+  // How far the head is turned (0 = facing forward, 1+ = turned significantly)
+  const yawAmount = Math.abs(headYaw);
 
-  if (!earLandmark) { model.visible = false; return; }
+  // === Calculate ear canal position ===
+  // The ear canal is outward from the tragus landmark.
+  // The further the head is turned, the more the tragus moves into view,
+  // but we still need a small outward offset to reach the actual canal.
 
-  // Ear tragus is the anchor point; earTop helps find ear canal area
-  // For RIC/BTE: position behind-the-ear (above tragus, slightly outward)
-  // For CIC/ITC: position in-the-ear (at tragus level)
+  // Direction: outward from face center (in original video coords)
+  // For user's right ear (landmark on LEFT side of original video), outward = further LEFT (negative x)
+  // For user's left ear (landmark on RIGHT side of original video), outward = further RIGHT (positive x)
+  const outwardSign = isRight ? -1 : 1; // in original video coordinates
+
+  // Base ear position: use multiple landmarks for stability
   let earX, earY;
 
+  // Weighted centroid of ear-adjacent landmarks for stable tracking
+  const earCenterX = tragus.x;
+  const earCenterY = tragus.y;
+
+  // Outward offset: proportional to face width, scaled by yaw
+  // More turn = ear is more exposed, need less offset (tragus IS the ear)
+  // Less turn = tragus is at face edge, ear is further out
+  const outwardFactor = Math.max(0.02, 0.10 - yawAmount * 0.04);
+
   if (fittingType === 'cic' || fittingType === 'itc') {
-    // In-canal: at the ear canal (tragus position)
-    earX = earLandmark.x * w;
-    earY = earLandmark.y * h;
+    // IN-CANAL: place at the ear canal opening
+    // Canal is at tragus level, slightly outward from face boundary
+    earX = earCenterX * w + (faceWidth * outwardFactor * outwardSign);
+    // Canal is vertically between tragus and earUpper (slightly above tragus)
+    if (earUpper) {
+      earY = (earUpper.y * 0.25 + earCenterY * 0.75) * h;
+    } else {
+      earY = earCenterY * h;
+    }
   } else {
-    // RIC/BTE: behind the ear, between tragus top and ear top
-    // Slightly outward from the ear edge and upward
-    const outwardOffset = faceWidth * 0.08 * (isRight ? 1 : -1);
-    earX = earLandmark.x * w + outwardOffset;
-    const earTopY = earTopLm ? earTopLm.y : earLandmark.y - 0.05;
-    earY = (earTopY * 0.4 + earLandmark.y * 0.6) * h; // between ear top and tragus
+    // RIC/BTE: behind and above the ear
+    // Sits on top of the ear, hooking behind it
+    earX = earCenterX * w + (faceWidth * outwardFactor * 0.5 * outwardSign);
+    if (earUpper && temple) {
+      // Between temple and upper ear area
+      earY = (temple.y * 0.3 + earUpper.y * 0.4 + earCenterY * 0.3) * h;
+    } else if (earUpper) {
+      earY = (earUpper.y * 0.6 + earCenterY * 0.4) * h;
+    } else {
+      earY = (earCenterY - 0.04) * h;
+    }
   }
 
   // Apply user's manual fine-tuning offset
   const imgX = earX + fittingPosX * 0.5;
   const imgY = earY + fittingPosY * 0.5;
 
-  // Mirror X for selfie camera
+  // Mirror X for selfie camera (video is drawn mirrored on canvas)
   const finalImgX = fittingFacingMode === 'user' ? (w - imgX) : imgX;
 
   // Convert image coords → Three.js world coords
@@ -2729,15 +2800,19 @@ function positionEarModel(model, show, ear, landmarks,
     modelScale
   );
 
-  // Rotation follows head
+  // === Rotation: follow head orientation ===
+  // Base rotation depends on type
   if (fittingType === 'cic' || fittingType === 'itc') {
-    model.rotation.set(0, isRight ? -1.0 : 1.0, -headTilt);
+    // In-canal: rotate to face into the ear canal
+    const baseYaw = isRight ? -0.8 : 0.8;
+    model.rotation.set(0, baseYaw + headYaw * 0.3, -headTilt);
   } else {
-    model.rotation.set(0, isRight ? -0.6 : 0.6, -headTilt);
+    // RIC/BTE: slight angle matching the ear orientation
+    const baseYaw = isRight ? -0.4 : 0.4;
+    model.rotation.set(0, baseYaw + headYaw * 0.3, -headTilt);
   }
-  model.rotation.y += headYaw * 0.8;
 
-  // Animate
+  // Animate LED/ring
   model.traverse((child) => {
     if (child.isMesh && child.material) {
       if (child.name === 'led_indicator') {
