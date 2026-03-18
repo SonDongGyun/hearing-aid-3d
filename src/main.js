@@ -2402,10 +2402,12 @@ function setupVirtualFitting() {
   document.getElementById('fitting-start-btn').addEventListener('click', startFitting);
   document.getElementById('fitting-stop').addEventListener('click', stopFitting);
 
-  // Touch-to-place: user taps on their ear in the camera view
+  // Touch fine-tune: user taps on their ear to manually adjust position
   const cameraWrap = document.querySelector('.fitting-camera-wrap');
   cameraWrap.addEventListener('click', onFittingTap);
   cameraWrap.addEventListener('touchend', (e) => {
+    // Only prevent default when fitting is active to avoid blocking button clicks
+    if (!fittingActive) return;
     e.preventDefault();
     if (e.changedTouches.length > 0) {
       const touch = e.changedTouches[0];
@@ -2529,6 +2531,16 @@ function onFaceMeshResults(results) {
   const w = fittingCanvas.width;
   const h = fittingCanvas.height;
 
+  // Always draw camera feed first
+  fittingCtx.clearRect(0, 0, w, h);
+  fittingCtx.save();
+  if (fittingFacingMode === 'user') {
+    fittingCtx.translate(w, 0);
+    fittingCtx.scale(-1, 1);
+  }
+  fittingCtx.drawImage(fittingVideo, 0, 0, w, h);
+  fittingCtx.restore();
+
   if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
     lastFaceLandmarks = results.multiFaceLandmarks[0];
     faceDetected = true;
@@ -2542,7 +2554,11 @@ function onFaceMeshResults(results) {
     if (guideOval) guideOval.style.opacity = '0.2';
 
     // Render 3D hearing aid models based on face landmarks
-    render3DFitting(w, h, lastFaceLandmarks);
+    try {
+      render3DFitting(w, h, lastFaceLandmarks);
+    } catch (e) {
+      console.error('render3DFitting error:', e);
+    }
   } else {
     faceDetected = false;
     lastFaceLandmarks = null;
@@ -2554,16 +2570,6 @@ function onFaceMeshResults(results) {
     if (fittingCICLeft) fittingCICLeft.visible = false;
     if (fittingITCRight) fittingITCRight.visible = false;
     if (fittingITCLeft) fittingITCLeft.visible = false;
-
-    // Draw camera feed even when no face detected
-    fittingCtx.clearRect(0, 0, w, h);
-    fittingCtx.save();
-    if (fittingFacingMode === 'user') {
-      fittingCtx.translate(w, 0);
-      fittingCtx.scale(-1, 1);
-    }
-    fittingCtx.drawImage(fittingVideo, 0, 0, w, h);
-    fittingCtx.restore();
 
     const statusEl = document.getElementById('fitting-status');
     if (statusEl) statusEl.textContent = '얼굴을 카메라에 맞춰주세요...';
@@ -2655,22 +2661,9 @@ function render3DFitting(w, h, landmarks) {
       w, h, faceWidth, faceHeight, faceCenterX, headTilt, headYaw, modelScale, time);
   }
 
-  // Render 3D scene to offscreen canvas
+  // Render 3D scene and composite overlay on top of video (already drawn by caller)
   fittingRenderer3D.render(fittingScene, fittingCamera3D);
-
-  // Composite: draw video first, then 3D overlay on top
-  const ctx = fittingCtx;
-  ctx.clearRect(0, 0, w, h);
-  // Draw camera feed onto canvas (mirrored for selfie)
-  ctx.save();
-  if (fittingFacingMode === 'user') {
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.drawImage(fittingVideo, 0, 0, w, h);
-  ctx.restore();
-  // Draw 3D hearing aid overlay on top
-  ctx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
+  fittingCtx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
 }
 
 function positionEarModel(model, show, ear, landmarks,
@@ -2692,12 +2685,13 @@ function positionEarModel(model, show, ear, landmarks,
   // Use the ear tragus landmark as base, then offset slightly
   // to place the hearing aid at the correct ear position.
   const earLandmark = isRight ? landmarks[LANDMARKS.rightEar] : landmarks[LANDMARKS.leftEar];
-  const earTop = isRight ? landmarks[LANDMARKS.rightEarTop] : landmarks[LANDMARKS.leftEarTop];
-  const earLobe = isRight ? landmarks[LANDMARKS.rightEarLobe] : landmarks[LANDMARKS.leftEarLobe];
+  const earTopLm = isRight ? landmarks[LANDMARKS.rightEarTop] : landmarks[LANDMARKS.leftEarTop];
   const forehead = landmarks[LANDMARKS.foreheadTop];
   const chin = landmarks[LANDMARKS.chinBottom];
 
-  // Ear tragus is the anchor point; earTop/earLobe help us find the ear canal area
+  if (!earLandmark) { model.visible = false; return; }
+
+  // Ear tragus is the anchor point; earTop helps find ear canal area
   // For RIC/BTE: position behind-the-ear (above tragus, slightly outward)
   // For CIC/ITC: position in-the-ear (at tragus level)
   let earX, earY;
@@ -2711,7 +2705,8 @@ function positionEarModel(model, show, ear, landmarks,
     // Slightly outward from the ear edge and upward
     const outwardOffset = faceWidth * 0.08 * (isRight ? 1 : -1);
     earX = earLandmark.x * w + outwardOffset;
-    earY = (earTop.y * 0.4 + earLandmark.y * 0.6) * h; // between ear top and tragus
+    const earTopY = earTopLm ? earTopLm.y : earLandmark.y - 0.05;
+    earY = (earTopY * 0.4 + earLandmark.y * 0.6) * h; // between ear top and tragus
   }
 
   // Apply user's manual fine-tuning offset
@@ -2772,8 +2767,12 @@ async function startFitting() {
   `;
 
   try {
-    // Initialize face mesh
-    await initFaceMesh();
+    // Initialize face mesh first (can fail silently, camera still works)
+    try {
+      await initFaceMesh();
+    } catch (fmErr) {
+      console.warn('FaceMesh init failed, continuing without:', fmErr);
+    }
 
     // Start camera
     fittingStream = await navigator.mediaDevices.getUserMedia({
@@ -2784,6 +2783,13 @@ async function startFitting() {
       }
     });
     fittingVideo.srcObject = fittingStream;
+
+    // Wait for video to be ready
+    await new Promise((resolve, reject) => {
+      fittingVideo.onloadedmetadata = resolve;
+      fittingVideo.onerror = reject;
+      setTimeout(resolve, 3000); // timeout fallback
+    });
     await fittingVideo.play();
 
     fittingCanvas.width = fittingVideo.videoWidth || 640;
@@ -2817,11 +2823,12 @@ async function startFitting() {
       drawFittingFallback();
     }
   } catch (err) {
-    console.warn('Fitting error:', err);
+    console.error('Fitting error:', err);
     overlay.classList.remove('hidden');
+    const isPermError = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
     overlay.innerHTML = `
-      <p style="color:#ff6666;">카메라 접근이 거부되었습니다.</p>
-      <p class="hand-hint">브라우저 설정에서 카메라 권한을 허용해주세요.</p>
+      <p style="color:#ff6666;">${isPermError ? '카메라 접근이 거부되었습니다.' : '피팅 시작 중 오류가 발생했습니다.'}</p>
+      <p class="hand-hint">${isPermError ? '브라우저 설정에서 카메라 권한을 허용해주세요.' : err.message || '다시 시도해주세요.'}</p>
       <button class="btn-primary" id="fitting-start-btn" style="margin-top:12px;">
         <span>📷</span> 다시 시도
       </button>
