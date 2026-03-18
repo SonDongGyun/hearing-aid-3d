@@ -2593,49 +2593,50 @@ function drawFaceScan(ctx, landmarks, w, h, headYaw) {
 // EAR POSITION CALCULATOR (3D landmark-based)
 // =====================================================
 function computeEarPosition(landmarks, isRight, w, h, faceWidth, headYaw) {
-  // Tragus: main anchor point at face contour
+  // =====================================================
+  // Tragus (234/454) = the BEST anchor for ear position
+  // It sits at the face contour exactly at ear level.
+  // The actual ear canal is BEYOND and SLIGHTLY BELOW the tragus.
+  //
+  // Anatomy reference:
+  //   - Tragus is the small flap in front of the ear canal
+  //   - Ear canal opening is directly behind the tragus
+  //   - The canal is roughly at the same height or slightly below
+  //   - Horizontally, the canal is ~2-8% of face width beyond the face boundary
+  //
+  // Landmark 127/356 (earTop) = ABOVE the ear (near temple) — NOT the ear canal
+  // Landmark 177/401 (earBottom) = jaw near earlobe — BELOW the canal
+  // =====================================================
+
   const tragus = landmarks[isRight ? LM.rightTragus : LM.leftTragus];
-  const earTop = landmarks[isRight ? LM.rightEarTop : LM.leftEarTop];
   const earBottom = landmarks[isRight ? LM.rightEarBottom : LM.leftEarBottom];
-  const temple = landmarks[isRight ? LM.rightTemple : LM.leftTemple];
-  const cheekbone = landmarks[isRight ? LM.rightCheekbone : LM.leftCheekbone];
 
   if (!tragus) return null;
 
-  // Use z-depth for better depth estimation
-  // z < 0 means closer to camera; visible ear has lower z
-  const noseTip = landmarks[LM.noseTip];
-  const depthDiff = tragus.z - (noseTip ? noseTip.z : 0);
+  const yawAbs = Math.abs(headYaw);
 
-  // === Ear canal X position ===
-  // The tragus landmark sits at the face boundary.
-  // The actual ear canal is slightly BEYOND the face boundary.
-  // In original video coords:
-  //   User's right ear (landmark 234) → LEFT side of video (small x)
-  //   Outward direction for right ear = further LEFT = negative x
-  //   User's left ear (landmark 454) → RIGHT side of video (large x)
-  //   Outward direction for left ear = further RIGHT = positive x
+  // === X: Outward from face boundary ===
+  // In original video: right ear (234) = LEFT side, left ear (454) = RIGHT side
   const outwardSign = isRight ? -1 : 1;
 
-  // Outward offset: decreases as head turns more (tragus approaches ear canal)
-  const yawAbs = Math.abs(headYaw);
-  const offsetScale = Math.max(0.01, 0.06 - yawAbs * 0.025);
-  const outwardOffset = faceWidth * offsetScale * outwardSign;
+  // Larger offset when head is barely turned (ear is further from face boundary)
+  // Smaller offset when head is very turned (tragus IS near the ear)
+  // Range: 8% → 2% of face width
+  const offsetPct = Math.max(0.02, 0.08 - yawAbs * 0.03);
+  const outwardOffset = faceWidth * offsetPct * outwardSign;
+  const earX = tragus.x * w + outwardOffset;
 
-  // === Ear canal Y position ===
-  // Canal is at tragus height. Use earTop to slightly adjust.
-  let canalY;
-  if (earTop && temple) {
-    // Weighted between tragus (70%) and upper landmarks (30%)
-    canalY = tragus.y * 0.65 + earTop.y * 0.2 + temple.y * 0.15;
+  // === Y: At tragus level, slightly toward earlobe ===
+  // The ear canal is at tragus height or slightly below (toward jaw).
+  // Blend: 85% tragus + 15% earBottom (jaw) to pull slightly downward
+  let earY;
+  if (earBottom) {
+    earY = (tragus.y * 0.85 + earBottom.y * 0.15) * h;
   } else {
-    canalY = tragus.y;
+    earY = tragus.y * h;
   }
 
-  const rawX = tragus.x * w + outwardOffset;
-  const rawY = canalY * h;
-
-  return { x: rawX, y: rawY, z: tragus.z, depthDiff };
+  return { x: earX, y: earY, z: tragus.z };
 }
 
 async function initFaceMesh() {
