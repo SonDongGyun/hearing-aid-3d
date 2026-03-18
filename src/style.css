@@ -1309,6 +1309,7 @@ footer {
 
 .fitting-camera-wrap video {
   z-index: 1;
+  opacity: 0;
 }
 
 .fitting-camera-wrap canvas {

@@ -2245,7 +2245,7 @@ function initFitting3D() {
   fittingCamera3D.position.set(0, 0, 10);
 
   // Transparent background renderer
-  fittingRenderer3D = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  fittingRenderer3D = new THREE.WebGLRenderer({ alpha: true, antialias: true, premultipliedAlpha: false });
   fittingRenderer3D.setSize(640, 480);
   fittingRenderer3D.setClearColor(0x000000, 0);
   fittingRenderer3D.toneMapping = THREE.ACESFilmicToneMapping;
@@ -2551,8 +2551,15 @@ function onFaceMeshResults(results) {
     if (fittingITCRight) fittingITCRight.visible = false;
     if (fittingITCLeft) fittingITCLeft.visible = false;
 
-    // Clear the overlay
+    // Draw camera feed even when no face detected
     fittingCtx.clearRect(0, 0, w, h);
+    fittingCtx.save();
+    if (fittingFacingMode === 'user') {
+      fittingCtx.translate(w, 0);
+      fittingCtx.scale(-1, 1);
+    }
+    fittingCtx.drawImage(fittingVideo, 0, 0, w, h);
+    fittingCtx.restore();
 
     const statusEl = document.getElementById('fitting-status');
     if (statusEl) statusEl.textContent = '얼굴을 카메라에 맞춰주세요...';
@@ -2649,9 +2656,18 @@ function render3DFitting(w, h, landmarks) {
   // Render 3D scene to offscreen canvas
   fittingRenderer3D.render(fittingScene, fittingCamera3D);
 
-  // Composite 3D render onto the 2D overlay canvas
+  // Composite: draw video first, then 3D overlay on top
   const ctx = fittingCtx;
   ctx.clearRect(0, 0, w, h);
+  // Draw camera feed onto canvas (mirrored for selfie)
+  ctx.save();
+  if (fittingFacingMode === 'user') {
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(fittingVideo, 0, 0, w, h);
+  ctx.restore();
+  // Draw 3D hearing aid overlay on top
   ctx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
 }
 
@@ -2804,10 +2820,20 @@ function sendFittingFrame() {
 function drawFittingFallback() {
   if (!fittingActive) return;
 
+  // Always draw video feed onto canvas
+  const w = fittingCanvas.width;
+  const h = fittingCanvas.height;
+  fittingCtx.clearRect(0, 0, w, h);
+  fittingCtx.save();
+  if (fittingFacingMode === 'user') {
+    fittingCtx.translate(w, 0);
+    fittingCtx.scale(-1, 1);
+  }
+  fittingCtx.drawImage(fittingVideo, 0, 0, w, h);
+  fittingCtx.restore();
+
   const canRenderFallback = fittingRenderer3D && (fittingModelLoaded || fittingType === 'cic' || fittingType === 'itc');
   if (canRenderFallback) {
-    const w = fittingCanvas.width;
-    const h = fittingCanvas.height;
     const isSelfie = fittingFacingMode === 'user';
     const faceHeightEstimate = h * 0.55;
     const FALLBACK_SCALE_DIVISORS = { ric: 2300, bte: 1700, itc: 3000, cic: 4500 };
@@ -2874,14 +2900,13 @@ function drawFittingFallback() {
 
     fittingRenderer3D.render(fittingScene, fittingCamera3D);
 
-    const ctx = fittingCtx;
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
+    // Draw 3D overlay on top of video (already drawn above)
+    fittingCtx.drawImage(fittingRenderer3D.domElement, 0, 0, w, h);
 
-    ctx.fillStyle = 'rgba(255,200,0,0.7)';
-    ctx.font = `${w < 400 ? 10 : 13}px "Noto Sans KR", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('얼굴 인식 로딩 중... 수동 조절 모드', w / 2, h - 16);
+    fittingCtx.fillStyle = 'rgba(255,200,0,0.7)';
+    fittingCtx.font = `${w < 400 ? 10 : 13}px "Noto Sans KR", sans-serif`;
+    fittingCtx.textAlign = 'center';
+    fittingCtx.fillText('얼굴 인식 로딩 중... 수동 조절 모드', w / 2, h - 16);
   }
 
   fittingAnimFrame = requestAnimationFrame(drawFittingFallback);
